@@ -43,8 +43,7 @@ pub const Error = error{
     DuplicateShorthand,
     /// An attempt to convert a string into the incorrect type.
     TypeMismatch,
-    /// An undefined flag name was specified.
-    UnknownFlag,
-    ///
-    Overflow,
+    /// The user has used the undefined "help" command.
+    /// This is typically not an actual "error", but is used as a signal to callers.
+    HelpRequested,
 } || std.mem.Allocator.Error || UserError;

@@ -13,8 +13,7 @@ pub const Bool = Value(bool, string.parseBool);
 /// Returns a wrapper for an integer type.
 /// Includes `u21` for UTF-8 codepoints.
 pub fn Int(comptime T: type) type {
-    comptime if (@typeInfo(T) != .Int)
-        @compileError("expected T to be an integer type, found " ++ @typeName(T));
+    comptime if (@typeInfo(T) != .Int) @compileError("expected T to be an integer type, found " ++ @typeName(T));
 
     const Closure = struct {
         fn parse(str: []const u8, dest: *T) ParseError!void {
@@ -26,7 +25,7 @@ pub fn Int(comptime T: type) type {
 
 /// Returns a wrapper for a floating-point number type.
 pub fn Float(comptime T: type) type {
-    if (@typeInfo(T) != .Float) @compileError("expected T to be a floating-point type, found " ++ @typeName(T));
+    comptime if (@typeInfo(T) != .Float) @compileError("expected T to be a floating-point type, found " ++ @typeName(T));
 
     const Closure = struct {
         fn parse(str: []const u8, dest: *T) ParseError!void {

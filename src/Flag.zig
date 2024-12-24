@@ -19,7 +19,6 @@ pub const StringList = std.ArrayListUnmanaged([]const u8);
 pub const Annotations = std.StringHashMapUnmanaged(StringList);
 
 /// Name of the flag.
-/// e.g. "verbose"
 ///
 /// This field is read-only.
 name: []const u8,
@@ -102,7 +101,7 @@ pub fn create(allocator: Allocator, name: []const u8, shorthand: ?u8, usage: []c
 /// Creates a deep-copy of another flag and returns it.
 pub fn dupe(allocator: Allocator, other: *Flag) Allocator.Error!*Flag {
     var flag = try allocator.create(Flag);
-    errdefer allocator.free(flag);
+    errdefer flag.destroy(allocator);
     // Initialize to zero so if an error occurs midway though,
     // the deferred called to destroy won't segfault.
     flag.* = .{
@@ -173,25 +172,17 @@ pub fn destroy(self: *Flag, allocator: Allocator) void {
 /// be used as the variable name in usage text.
 ///
 /// When not found, a generic name based on the value type (e.g. "int", "string")
-/// will be used as a placeholder.
+/// will be used as a placeholder. Boolean flags will not return an value,
+/// as the presence of the flag already indicates the value.
 pub fn argName(self: *Flag) []const u8 {
     for (0.., self.usage) |i, beg| {
         if (beg != '`') continue;
         for (i + 1.., self.usage[i + 1 ..]) |j, end| {
             if (std.ascii.isWhitespace(end)) break;
-            if (end == '`') return self.usage[i + i .. j];
+            if (end == '`') return self.usage[i + 1 .. j];
         } else break;
     }
 
     const arg_name = self.value.argName();
     return if (std.mem.eql(u8, "bool", arg_name)) "" else arg_name;
-}
-
-pub fn unquoteUsage(self: *Flag, allocator: Allocator) Allocator.Error![]u8 {
-    const size = std.mem.replacementSize(u8, self.usage, "`", "");
-    if (self.usage.len - size <= 1) return allocator.dupe(u8, self.usage);
-
-    const owned = try allocator.alloc(u8, size);
-    _ = std.mem.replace(u8, self.usage, "`", "", owned);
-    return owned;
 }

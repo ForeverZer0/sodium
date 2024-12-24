@@ -1,14 +1,11 @@
 const std = @import("std");
 const string = @import("string.zig");
+const wrapper = @import("wrapper.zig");
 
 const Allocator = std.mem.Allocator;
-
-const wrapper = @import("wrapper.zig");
 const AnyValue = @import("AnyValue.zig");
-
 const Error = @import("errors.zig").Error;
 const FlagSet = @This();
-
 const Flag = @import("Flag.zig");
 
 /// A dynamically-sized list of flags.
@@ -16,6 +13,8 @@ pub const FlagList = std.ArrayListUnmanaged(*Flag);
 
 /// Because "[]const []const u8" doesn't make me feel nice.
 const ArgList = []const []const u8;
+
+/// A hashmap containing flags, with their names as keys.
 pub const FlagMap = std.StringHashMapUnmanaged(*Flag);
 
 /// Iterator for flags.
@@ -25,7 +24,7 @@ pub const FlagIterator = struct {
     /// The items to be yielded.
     items: []const *Flag,
 
-    /// Yields the next item in the iterator, or `null` when done.
+    /// Yields the next item in the iterator, or `null` when all items have been exhausted.
     pub fn next(self: *FlagIterator) ?*Flag {
         if (self.index >= self.items.len) return null;
         defer self.index += 1;
@@ -59,6 +58,7 @@ exit_on_error: bool,
 /// For example, given command-line "curl --cert client.pem --key key.pem --insecure https://example.com",
 /// `args` would contain only "https://example.com", as it not part of the options.
 args: ArgList,
+/// The length of the arguments at the point a `--` was encountered while parsing, or `null` if not present.
 len_at_terminator: ?usize,
 /// Mapping of flags that were explicitly parsed from the command line arguments.
 /// This field should only be used in a read-only context.
@@ -112,12 +112,6 @@ pub fn init(allocator: Allocator, name: []const u8) Error!FlagSet {
         .output = null,
         .ignore_unknown = false,
     };
-}
-
-test "init/deinit" {
-    var set = try init(std.testing.allocator, "testapp");
-
-    defer set.deinit();
 }
 
 /// Prints an error message to the user, and optionally exits the application when `exit_on_error` is `true`.
@@ -199,10 +193,9 @@ pub fn addFlag(self: *FlagSet, comptime T: type, name: []const u8, shorthand: ?u
         .Array => wrapper.Array(T),
         .Vector => wrapper.Vector(T),
         .Pointer => |pointer| blk: {
-            // TODO:Test this correctly
-            // Include test for const
-            if (pointer.size != .Slice) @compileError("pointer types are not supported");
-            if (pointer.child != u8) @compileError("slices must have a child type of \"u8\" (string)");
+            if (pointer.size != .Slice) @compileError("pointer types require a custom parsing implementation");
+            if (pointer.child != u8) @compileError("slices types must be \"[]const u8\" (string), found " ++ @typeName(T));
+            if (!pointer.is_const) @compileError("expected \"[]const u8\", found \"[]u8\"");
             break :blk wrapper.String;
         },
         else => @compileError("unable to parse \"" ++ @typeName(T) ++ "\" type, see addFlagWithValue()"),
@@ -253,7 +246,7 @@ pub fn addFlagWithValue(self: *FlagSet, name: []const u8, shorthand: ?u8, usage:
     if (flag.shorthand) |c| try self.shorthands.put(self.allocator, c, flag);
 }
 
-/// Tests if the set has any flags defined, optionally including ones in a "hidden" state.
+/// Tests if the set has any flags defined, optionally including those in a "hidden" state.
 ///
 /// A hidden flag functions normally, but does not appear in help/usage messages.
 pub fn hasFlags(self: *FlagSet, include_hidden: bool) bool {
@@ -325,7 +318,7 @@ pub fn setValue(self: *FlagSet, name: []const u8, value: []const u8) !void {
         // Output deprecated message when defined
         if (flag.deprecated) |msg| {
             const writer = self.getOutput();
-            try std.fmt.format(writer, "Flag --{s} has been deprecated, {s}\n", .{ flag.name, msg });
+            try std.fmt.format(writer, "flag --{s} has been deprecated, {s}\n", .{ flag.name, msg });
         }
     } else return error.UnknownFlag;
 }
@@ -359,7 +352,7 @@ pub fn setValueAs(self: *FlagSet, comptime T: type, name: []const u8, value: T) 
         // Output deprecated message when defined
         if (flag.deprecated) |msg| {
             const writer = self.getOutput();
-            try std.fmt.format(writer, "Flag --{s} has been deprecated, {s}\n", .{ flag.name, msg });
+            try std.fmt.format(writer, "flag --{s} has been deprecated, {s}\n", .{ flag.name, msg });
         }
     }
 
@@ -388,16 +381,17 @@ pub fn getOutput(self: *FlagSet) std.io.AnyWriter {
 /// otherwise they are in primordial order.
 ///
 /// When `all` is `true`, all flags will be returned, otherwise only flags that were
-/// defined by the actual command line arguments will be included.
+/// explicitly set (i.e. parsed from command-line arguments) will be included.
 ///
-/// The iterator does not need freed; the results are cached internally.
-pub fn iterator(self: *FlagSet, sort: bool, all: bool) Allocator.Error!FlagIterator {
+/// The iterator does not need freed. Sorting is done lazily, and results are cached,
+/// hence a possible allocation error being returned.
+pub fn iterator(self: *FlagSet, sorted: bool, all: bool) Allocator.Error!FlagIterator {
     var list: FlagList = undefined;
 
     // TODO: Break this into separate sorted/ordered functions
 
     if (all) {
-        list = if (sort) blk: {
+        list = if (sorted) blk: {
             // Sort now if needed
             if (self.formal_ordered.items.len != self.formal_sorted.items.len) {
                 self.formal_sorted.deinit(self.allocator);
@@ -406,7 +400,7 @@ pub fn iterator(self: *FlagSet, sort: bool, all: bool) Allocator.Error!FlagItera
             break :blk self.formal_sorted;
         } else self.formal_ordered;
     } else {
-        list = if (sort) blk: {
+        list = if (sorted) blk: {
             // Sort now if needed
             if (self.actual_ordered.items.len != self.actual_sorted.items.len) {
                 self.actual_sorted.deinit(self.allocator);
@@ -419,6 +413,7 @@ pub fn iterator(self: *FlagSet, sort: bool, all: bool) Allocator.Error!FlagItera
     return FlagIterator{ .items = list.items };
 }
 
+/// Sorts a list of flags in alphanumeric order.
 fn sortFlags(allocator: Allocator, unsorted: FlagList) Allocator.Error!FlagList {
     const Compare = struct {
         fn lessThan(context: void, a: *Flag, b: *Flag) bool {
@@ -437,6 +432,8 @@ fn sortFlags(allocator: Allocator, unsorted: FlagList) Allocator.Error!FlagList 
     return result;
 }
 
+/// Defines an alternative name that maps to the same flag.
+/// e.g. "--silent" and "--quiet" can be used interchangeably.
 pub fn alias(self: *FlagSet, name: []const u8, alias_name: []const u8) Error!void {
     if (self.getFlag(alias_name, true)) |_| return error.DuplicateName;
     if (self.getFlag(name, false)) |flag| {
@@ -448,7 +445,7 @@ pub fn alias(self: *FlagSet, name: []const u8, alias_name: []const u8) Error!voi
 /// Marks a flag with the given name as "hidden".
 /// Returns an error if the flag does not exist.
 pub fn hide(self: *FlagSet, name: []const u8) Error!void {
-    if (self.formal.get(name)) |flag| {
+    if (self.getFlag(name, true)) |flag| {
         flag.hidden = true;
     } else return error.UnknownFlag;
 }
@@ -510,8 +507,8 @@ pub fn annotate(self: *FlagSet, name: []const u8, key: []const u8, entry: []cons
         defer if (result.found_existing) self.allocator.free(owned_key);
         // Append the line of text to the entry.
         var list: Flag.StringList = result.value_ptr.*;
-        // TODO: Use .{}
-        if (!result.found_existing) list = std.mem.zeroes(Flag.StringList);
+        // Zero the memory if it didn't previously exist.
+        if (!result.found_existing) list = .{};
 
         const owned_value = try self.allocator.dupe(u8, entry);
         errdefer self.allocator.free(owned_value);
@@ -537,8 +534,8 @@ pub fn annotateSlice(self: *FlagSet, name: []const u8, key: []const u8, entries:
         defer if (result.found_existing) self.allocator.free(owned_key);
         // Append the line of text to the entry.
         var list: Flag.StringList = result.value_ptr.*;
-        // TODO: Use .{}
-        if (!result.found_existing) list = std.mem.zeroes(Flag.StringList);
+        // Zero the memory if it didn't previously exist.
+        if (!result.found_existing) list = .{};
 
         // Ensure enough space for the entries, then add them.
         try list.ensureUnusedCapacity(self.allocator, entries.len);
@@ -560,13 +557,14 @@ pub fn annotation(self: *FlagSet, name: []const u8, key: []const u8) ?[]const []
 /// Tests if a flag with the given name as been explicitly set during parsing.
 /// Returns an error if the flag does not exist.
 pub fn isChanged(self: *FlagSet, name: []const u8) Error!bool {
-    if (self.formal.get(name)) |flag| {
+    if (self.getFlag(name, true)) |flag| {
         return flag.changed;
     } else return error.UnknownFlag;
 }
 
+/// Prints the default usage text.
 pub fn printDefaults(self: *FlagSet) !void {
-    const usages = try self.flagUsages();
+    const usages = try self.flagUsages(self.allocator, 0);
     defer self.allocator.free(usages);
 
     const output = self.getOutput();
@@ -576,72 +574,52 @@ pub fn printDefaults(self: *FlagSet) !void {
     return output.writeAll(usages);
 }
 
-pub fn flagUsages(self: *FlagSet) Allocator.Error![]u8 {
-    return self.flagUsagesWrapped(0);
-}
-
-pub fn flagUsagesWrapped(self: *FlagSet, cols: usize) Allocator.Error![]u8 {
-    var lines = try std.ArrayList([]u8).initCapacity(self.allocator, self.formal_ordered.items.len);
+/// Returns the usage text, wrapped to the specified number of columns.
+/// A value of `0` indicates no wrapping.
+///
+/// The caller is responsible for freeing the returned memory.
+pub fn flagUsages(self: *FlagSet, allocator: Allocator, columns: usize) Allocator.Error![]u8 {
+    var lines = try std.ArrayList([]u8).initCapacity(allocator, self.formal_ordered.items.len);
     defer {
-        for (lines.items) |line| self.allocator.free(line);
+        for (lines.items) |line| allocator.free(line);
         lines.deinit();
     }
 
-    var line_buffer = std.ArrayList(u8).init(self.allocator);
+    var line_buffer = std.ArrayList(u8).init(allocator);
     defer line_buffer.deinit();
     var writer = line_buffer.writer();
 
-    var maxlen: usize = 0;
+    var max_len: usize = 0;
     var iter = try self.iterator(self.sort, true);
     while (iter.next()) |flag| {
+        // Do not print hidden flags
         if (flag.hidden) continue;
 
+        // Print the shorthand and flag names
         if (flag.shorthand != null and flag.deprecated_shorthand == null) {
             try std.fmt.format(writer, "  -{c}, --{s}", .{ flag.shorthand.?, flag.name });
         } else {
             try std.fmt.format(writer, "      --{s}", .{flag.name});
         }
 
-        var var_name = flag.argName();
-        // Ignore "bool" as a name, the presence of the flag is its value.
-        if (std.mem.eql(u8, var_name, "bool")) var_name = "";
+        // Print the argument/type name, if any
+        const type_name = flag.value.argName();
+        try writeArgument(flag, writer, type_name);
 
-        const arg_name = flag.value.argName();
-
-        // Formatting for when a value is optional and uses a default.
-        if (flag.default_no_opt) |opt| {
-            if (std.mem.eql(u8, arg_name, "string")) {
-                try std.fmt.format(writer, " [{s}=\"{s}\"]", .{ var_name, opt });
-            } else if (std.mem.eql(u8, arg_name, "bool")) {
-                if (!std.mem.eql(u8, opt, "true")) {
-                    try std.fmt.format(writer, " [{s}={s}]", .{ var_name, opt });
-                }
-            } else if (std.mem.eql(u8, arg_name, "count")) {
-                // TODO: Remove this branch?
-                if (!std.mem.eql(u8, opt, "+1")) {
-                    try std.fmt.format(writer, " [{s}={s}]", .{ var_name, opt });
-                }
-            } else {
-                try std.fmt.format(writer, " [{s}={s}]", .{ var_name, opt });
-            }
-        } else {
-            if (var_name.len > 0) try std.fmt.format(writer, " <{s}>", .{var_name});
-        }
-
-        // The usage message with back-ticks stripped.
-        const usage = try flag.unquoteUsage(self.allocator);
-        defer self.allocator.free(usage);
-
-        // Special character used as a marker.
-        // Gets replaced later once the final alignment is calculated.
+        // Insert a marker that will be later removed once final alignment is calculated;
         try writer.writeByte('\x00');
-        maxlen = @max(line_buffer.items.len, maxlen);
-        try writer.writeAll(usage);
+        // Update the maximum column width for all flags up to this point.
+        max_len = @max(line_buffer.items.len, max_len);
+        // Print the usage message with back-ticks stripped.
+        try writeEscaped(flag.usage, writer);
 
+        // Print the default value, if any
         if (flag.default) |default| {
-            if (std.mem.eql(u8, arg_name, "string")) {
+            if (std.mem.eql(u8, type_name, "string")) {
+                // Quote string values
                 try std.fmt.format(writer, " (default \"{s}\")", .{default});
-            } else if (!std.mem.eql(u8, arg_name, "bool")) {
+            } else if (!std.mem.eql(u8, type_name, "bool")) {
+                // Omit "(default true)" for boolean flags
                 try std.fmt.format(writer, " (default {s})", .{default});
             }
         }
@@ -654,17 +632,20 @@ pub fn flagUsagesWrapped(self: *FlagSet, cols: usize) Allocator.Error![]u8 {
     }
 
     // Initialize a dynamically-sized buffer for writing to.
-    var buffer = std.ArrayList(u8).init(self.allocator);
+    var buffer = std.ArrayList(u8).init(allocator);
     defer buffer.deinit();
     writer = buffer.writer();
 
     for (lines.items) |line| {
+        // Find the index of the marker previously placed
         const sidx = std.mem.indexOfScalar(u8, line, '\x00') orelse unreachable;
 
+        // Write up to the marker, then fill with spaces to uniform length
         try writer.writeAll(line[0..sidx]);
-        try writer.writeByteNTimes(' ', maxlen - sidx);
+        try writer.writeByteNTimes(' ', max_len - sidx);
 
-        const opts = string.WrapOpts{ .width = cols, .indent = maxlen };
+        // Wrap the usage text, prefixed with the same spacing
+        const opts = string.WrapOpts{ .width = columns, .indent = max_len };
         string.wrapLinesTo(writer.any(), line[sidx + 1 ..], opts) catch {
             return error.OutOfMemory;
         };
@@ -674,28 +655,69 @@ pub fn flagUsagesWrapped(self: *FlagSet, cols: usize) Allocator.Error![]u8 {
     return buffer.toOwnedSlice();
 }
 
-/// Executes parsing arguments of command-line arguments
-/// using the current configuration.
-pub fn parseCommandLineArgs(self: *FlagSet) !void {
-    // TODO: Error
+/// Prints usage text to the given writer with back-ticks stripped.
+fn writeEscaped(text: []const u8, writer: std.ArrayList(u8).Writer) !void {
+    var str = text;
+    while (str.len > 0) {
+        if (std.mem.indexOfScalar(u8, str, '`')) |i| {
+            try writer.writeAll(str[0..i]);
+            str = str[i + 1 ..];
+            continue;
+        }
+        // No back-tick found, write the whole string and break
+        try writer.writeAll(str);
+        break;
+    }
+}
+
+// Writes the argument section of the usage text.
+fn writeArgument(flag: *Flag, writer: std.ArrayList(u8).Writer, type_name: []const u8) !void {
+    var arg_name = flag.argName();
+    // Ignore "bool" as a name, the presence of the flag is its value.
+    if (std.mem.eql(u8, arg_name, "bool")) arg_name = "";
+
+    // Formatting for when a value is optional and uses a default.
+    if (flag.default_no_opt) |opt| {
+        // Quote strings
+        if (std.mem.eql(u8, type_name, "string")) {
+            try std.fmt.format(writer, " [{s}=\"{s}\"]", .{ arg_name, opt });
+        } else if (std.mem.eql(u8, type_name, "bool")) {
+            // Omit for boolean flags
+            if (!std.mem.eql(u8, opt, "true")) {
+                try std.fmt.format(writer, " [{s}={s}]", .{ arg_name, opt });
+            }
+        } else if (std.mem.eql(u8, type_name, "count")) {
+            // TODO: Remove this branch?
+            if (!std.mem.eql(u8, opt, "+1")) {
+                try std.fmt.format(writer, " [{s}={s}]", .{ arg_name, opt });
+            }
+        } else {
+            try std.fmt.format(writer, " [{s}={s}]", .{ arg_name, opt });
+        }
+    } else if (arg_name.len > 0) {
+        try std.fmt.format(writer, " <{s}>", .{arg_name});
+    }
+}
+
+/// Parses the command-line arguments of the running application.
+pub fn parseArgsFromCommandLine(self: *FlagSet) !void {
+    // TODO: Error?
     if (self.parsed) return;
     const args = try std.process.argsAlloc(self.allocator);
     defer std.process.argsFree(self.allocator, args);
-    return parseArgs(self, args);
+    return parseArgs(self, args[1..]);
 }
 
-/// Parses the arguments
-pub fn parseArgs(self: *FlagSet, arguments: []const []const u8) !void {
-    if (arguments.len <= 1) {
-        self.parsed = true;
-        return;
-    }
+/// Parses the specified command-line arguments.
+/// The argument list should *NOT* contain the command/application name in the first position.
+pub fn parseArgs(self: *FlagSet, arguments: ArgList) !void {
+    if (arguments.len == 0) return;
 
     var list = try std.ArrayList([]const u8).initCapacity(self.allocator, arguments.len);
     defer list.deinit();
 
-    // The first argument is always the application name
-    var args = arguments[1..];
+    // Create a mutable copy with the same backing storage
+    var args = arguments;
     while (args.len > 0) {
         const s = args[0];
         args = args[1..];
@@ -730,6 +752,9 @@ pub fn parseArgs(self: *FlagSet, arguments: []const []const u8) !void {
     self.parsed = true;
 }
 
+/// When `ignore_unknown`  or skipping a flag, this function checks
+/// the whether the following value was associated with the ignored
+/// flag, and consumes it.
 fn stripUnknownFlagValue(args: ArgList) ArgList {
     if (args.len == 0) {
         // --unknown
@@ -743,13 +768,14 @@ fn stripUnknownFlagValue(args: ArgList) ArgList {
     }
 
     if (args.len > 1) {
-        // --unknown value (consumes valuea)
+        // --unknown value (consumes value)
         return args[1..];
     }
 
     return &.{};
 }
 
+/// Parses a long-form (e.g. "--flag") argument.
 fn parseLongArg(self: *FlagSet, str: []const u8, arguments: ArgList) !ArgList {
     var name = str[2..];
     if (name.len == 0 or name[0] == '-' or name[0] == '=') {
@@ -807,6 +833,7 @@ fn parseLongArg(self: *FlagSet, str: []const u8, arguments: ArgList) !ArgList {
     return args;
 }
 
+/// Parses a short-form (e.g. "-f" or "-Syu") argument.
 fn parseShortArg(self: *FlagSet, str: []const u8, arguments: ArgList) !ArgList {
     var args = arguments;
     var shorthands = str[1..];
@@ -818,6 +845,7 @@ fn parseShortArg(self: *FlagSet, str: []const u8, arguments: ArgList) !ArgList {
     return args;
 }
 
+/// Parses a short-form (e.g. "-f") argument.
 fn parseShortSingle(self: *FlagSet, shorthands: []const u8, args: ArgList, out_args: *ArgList) ![]const u8 {
     out_args.* = args;
     var out_shorts = shorthands[1..];
@@ -865,13 +893,13 @@ fn parseShortSingle(self: *FlagSet, shorthands: []const u8, args: ArgList, out_a
         out_args.* = args[1..];
     } else {
         // -f (missing required argument)
-        self.printError("flag needs an arrgument: {c} in -{s}\n", .{ c, shorthands });
+        self.printError("flag needs an argument: {c} in -{s}\n", .{ c, shorthands });
         return error.MissingArgument;
     }
 
     if (flag.deprecated_shorthand) |msg| {
         const output = self.getOutput();
-        try std.fmt.format(output, "Flag shorthand -{c} has been deprecated: {s}\n", .{ c, msg });
+        try std.fmt.format(output, "flag shorthand -{c} has been deprecated: {s}\n", .{ c, msg });
     }
 
     self.setValue(flag.name, value.?) catch |err| {

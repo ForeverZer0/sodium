@@ -37,7 +37,7 @@ pub fn argName(self: AnyValue) []const u8 {
 
 /// Returns the value represented as a string.
 ///
-/// The caller must free the returned memory.
+/// The caller is responsible for freeing the returned memory.
 pub fn toString(self: AnyValue, allocator: Allocator) Allocator.Error![]u8 {
     return self.string_func(allocator, self.value_ptr);
 }

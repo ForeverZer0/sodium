@@ -453,6 +453,8 @@ test "parseBool" {
     try expectError(error.EmptyString, parseBool("", &value));
 }
 
+/// Parse a string...from a string.
+/// Simply returns the input string, and exists only to satisfy an interface.
 pub fn parseString(str: []const u8, dest: *[]const u8) ParseError!void {
     dest.* = str;
 }
