@@ -7,7 +7,7 @@ const expectEqualStrings = std.testing.expectEqualStrings;
 const expectError = std.testing.expectError;
 
 /// Error set for string-parsing related errors.
-const ParseError = error{
+pub const ParseError = error{
     /// An empty string was given.
     EmptyString,
     /// The number of given items is less than the size of an array/vector.
@@ -159,8 +159,6 @@ pub fn parseEnum(comptime T: type, str: []const u8, dest: *T) ParseError!void {
     };
 
     // Attempt to convert numeric value into enum type
-    // The only possible error is "InvalidEnumTag", which is guarantee not
-    // to occur due to comptime static typing.
     dest.* = try std.meta.intToEnum(T, tag_int);
 }
 
@@ -290,9 +288,7 @@ fn parseSingle(comptime T: type, str: []const u8, dest: *T) ParseError!void {
         .Bool => parseBool(str, dest),
         .Enum => parseEnum(T, str, dest),
         .Pointer => |ptr| blk: {
-            comptime if (ptr.size != .Slice) @compileError("pointer types are not supported, got " ++ @typeName(T));
-            comptime if (ptr.child != u8) @compileError("\"string\" type must be []const u8, got " ++ @typeName(T));
-            comptime if (!ptr.is_const) @compileError("\"string\" type must be []const u8, got " ++ @typeName(T));
+            comptime assertString(ptr);
             break :blk parseString(str, dest);
         },
         else => @compileError(""),
@@ -401,6 +397,14 @@ fn parseFixedWidth(comptime T: type, comptime Child: type, comptime len: comptim
     }
     if (i != len) return error.NotEnoughItems;
 }
+
+inline fn assertString(comptime ptr: std.builtin.Type.Pointer) void {
+    comptime if (ptr.size != .Slice or ptr.child != u8 or !ptr.is_const) {
+        @compileError("[]const u8 (string) is the only supported slice type");
+    };
+}
+
+// TODO: Private for now.
 
 /// Parses a sentinel-terminated slice from a comma-separated string.
 /// The slice must be pre-allocated, and large enough to hold the number of parsed items,
