@@ -1,6 +1,8 @@
 //! Contains functions for parsing and interacting with strings.
 
 const std = @import("std");
+const Allocator = std.mem.Allocator;
+const AnyWriter = std.io.AnyWriter;
 
 const expectEqual = std.testing.expectEqual;
 const expectEqualStrings = std.testing.expectEqualStrings;
@@ -24,6 +26,208 @@ pub const ParseError = error{
     /// and the enum is not marked non-exhaustive.
     InvalidEnumTag,
 };
+
+/// Provides options for wrapping lines.
+pub const WrapOpts = struct {
+    /// The maximum width (in columns) of each line.
+    width: usize = 80,
+    /// The number of spaces to apply in indentation.
+    /// Each newline will be prefixed by this amount.
+    indent: usize = 4,
+    /// Number of ASCII characters that can exceed `width`.
+    /// This tolerance is used to prevent a short word being orphaned on the final line.
+    slop: usize = 5,
+};
+
+const LineSplit = struct {
+    line: []const u8,
+    remainder: []const u8,
+
+    pub fn all(str: []const u8) LineSplit {
+        return .{ .line = str, .remainder = &.{} };
+    }
+};
+
+/// Splits a string on whitespace into an initial sub-string, up to `max` characters in length.
+/// Will go `slop` over `max` if that encompasses the entire string.
+/// This avoids short words orphaned on the final line.
+fn wrapLine(max: usize, slop: usize, str: []const u8) LineSplit {
+    if (max + slop > str.len) return LineSplit.all(str);
+
+    if (std.mem.lastIndexOfAny(u8, str[0..max], &.{ ' ', '\t', '\n' })) |width| {
+        if (std.mem.lastIndexOfScalar(u8, str[0..max], '\n')) |newline| {
+            if (newline < width) return .{
+                .line = str[0..newline],
+                .remainder = str[newline + 1 ..],
+            };
+        }
+        return .{
+            .line = str[0..width],
+            .remainder = str[width + 1 ..],
+        };
+    }
+    return LineSplit.all(str);
+}
+
+/// Inserts the specified number of spaces after newlines in a string.
+///
+/// Caller is responsible for freeing the returned memory.
+pub fn insertIndentation(allocator: Allocator, str: []const u8, size: usize) Allocator.Error![]u8 {
+    // Early out for zero values.
+    if (size == 0 or str.len == 0) return allocator.dupe(u8, str);
+
+    // Create a buffer to write with
+    var buffer = try std.ArrayList(u8).initCapacity(allocator, str.len);
+    defer buffer.deinit();
+    var writer = buffer.writer();
+
+    // Loop until end input string has been reached
+    var i: usize = 0;
+    while (i < str.len) {
+        if (std.mem.indexOfScalar(u8, str[i..], '\n')) |offset| {
+            // A newline was found, write from current position to after that offset
+            try writer.writeAll(str[i .. i + offset + 1]);
+            // Write out the specified number of spaces for the indent
+            try writer.writeByteNTimes(' ', size);
+            i += offset + 1;
+            continue;
+        }
+        // No newline found, copy until end of string and break loop
+        try writer.writeAll(str[i..]);
+        break;
+    }
+
+    return buffer.toOwnedSlice();
+}
+
+/// Inserts the specified number of spaces after newlines in a string.
+pub fn insertIndentationTo(writer: AnyWriter, str: []const u8, size: usize) !void {
+    // Early out for zero values.
+    if (size == 0 or str.len == 0) return;
+
+    // Loop until end input string has been reached
+    var i: usize = 0;
+    while (i < str.len) {
+        if (std.mem.indexOfScalar(u8, str[i..], '\n')) |offset| {
+            // A newline was found, write from current position to after that offset
+            try writer.writeAll(str[i .. i + offset + 1]);
+            // Write out the specified number of spaces for the indent
+            try writer.writeByteNTimes(' ', size);
+            i += offset + 1;
+            continue;
+        }
+        // No newline found, copy until end of string and break loop
+        try writer.writeAll(str[i..]);
+        break;
+    }
+}
+
+test "insertIndentation" {
+    const str1 = try insertIndentation(std.testing.allocator, "HELLO\nWORLD", 2);
+    defer std.testing.allocator.free(str1);
+    try std.testing.expectEqualStrings("HELLO\n  WORLD", str1);
+
+    const str2 = try insertIndentation(std.testing.allocator, "\nHELLO\nWORLD\n\nGOODBYE\n", 3);
+    defer std.testing.allocator.free(str2);
+    try std.testing.expectEqualStrings("\n   HELLO\n   WORLD\n   \n   GOODBYE\n   ", str2);
+}
+
+/// Wraps a string to a maximum width with leading indentation.
+/// The first line is not indented, as this assumed to be done by the caller.
+pub fn wrapLinesTo(writer: AnyWriter, str: []const u8, opts: WrapOpts) !void {
+    // Invalid options.
+    if (opts.width <= opts.indent) return writer.writeAll(str);
+
+    // When width is 0, only apply indentation.
+    if (opts.width == 0) return insertIndentationTo(writer, str, opts.indent);
+
+    var indent = opts.indent;
+    var wrap = opts.width - indent;
+
+    // Not enough space for sensible wrapping.
+    // Wrap as a block on next line instead.
+    if (wrap < 24) {
+        indent = 16;
+        wrap = opts.width - indent;
+        try writer.writeByte('\n');
+        try writer.writeByteNTimes(' ', indent);
+    }
+    // If still not enough space, then it is time to abort.
+    if (wrap < 24) return insertIndentationTo(writer, str, indent);
+
+    // To avoid short words orphaned on the final line, use a bit of
+    // tolerance that can exceed the max to fit it.
+    wrap = wrap - opts.slop;
+
+    // Handle the first line, which is indented by the caller (or special case above)
+    var split = wrapLine(wrap, opts.slop, str);
+    try writer.writeAll(split.line);
+
+    // Wrap the remaining lines.
+    while (split.remainder.len > 0) {
+        try writer.writeByte('\n');
+        try writer.writeByteNTimes(' ', indent);
+
+        split = wrapLine(wrap, opts.slop, split.remainder);
+        try writer.writeAll(split.line);
+    }
+}
+
+/// Wraps a string to a maximum width with leading indentation.
+/// The first line is not indented, as this assumed to be done by the caller.
+///
+/// Caller is responsible for freeing the returned memory.
+pub fn wrapLines(allocator: Allocator, str: []const u8, opts: WrapOpts) Allocator.Error![]u8 {
+    // Calculate the difference between the end of the line and the indentation.
+    var buffer = try std.ArrayList(u8).initCapacity(allocator, str.len);
+    defer buffer.deinit();
+    const writer = buffer.writer();
+
+    // OutOfMemory is the only actual error that can be generated here, but
+    // the use of AnyWriter prevents the use of a concrete error set.
+    wrapLinesTo(writer.any(), str, opts) catch return error.OutOfMemory;
+    return buffer.toOwnedSlice();
+}
+
+test "wrapLines" {
+    const lorem = "Lorem ipsum dolor sit amet. Et autem modi qui repudiandae earum vel nostrum deleniti ut voluptatum enim. Ab voluptatem itaque non quasi similique ea molestias officiis. Ea dolorem illum qui architecto officia qui cupiditate ipsa. Rem excepturi molestiae est galisum dolor qui omnis nobis et quidem suscipit sed rerum earum.";
+
+    const opts = WrapOpts{ .indent = 4, .width = 80 };
+    const wrapped = try wrapLines(std.testing.allocator, lorem, opts);
+    defer std.testing.allocator.free(wrapped);
+
+    var line_no: usize = 0;
+    var iter = std.mem.splitScalar(u8, wrapped, '\n');
+    while (iter.next()) |line| : (line_no += 1) {
+        switch (line_no) {
+            // Non-indented first line
+            0 => try std.testing.expectEqualStrings("Lorem ipsum", line[0..11]),
+            // All subsequent strings with indent
+            else => try std.testing.expectEqualStrings("    ", line[0..4]),
+        }
+        try std.testing.expect(line.len <= opts.width + opts.slop);
+    }
+    try std.testing.expectEqual(5, line_no);
+}
+
+/// Tests if a string is empty or only contains ASCII whitespace characters.
+pub fn isEmptyOrWhitespace(str: []const u8) bool {
+    if (str.len == 0) return true;
+    for (str) |c| switch (c) {
+        ' ', '\n', '\t', '\r', 0x0B, 0x0C => continue,
+        else => return false,
+    };
+    return true;
+}
+
+test "isEmptyOrWhitespace" {
+    try expectEqual(true, isEmptyOrWhitespace(""));
+    try expectEqual(true, isEmptyOrWhitespace("   "));
+    try expectEqual(true, isEmptyOrWhitespace("  \r\n"));
+    try expectEqual(true, isEmptyOrWhitespace("\t  \n"));
+    try expectEqual(true, isEmptyOrWhitespace("\t"));
+    try expectEqual(false, isEmptyOrWhitespace("\t    w"));
+}
 
 /// Parse an integer in string format.
 ///
