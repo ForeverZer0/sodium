@@ -1,9 +1,11 @@
 //! Interface type of values that can be parsed from a command-line option.
 
 const Allocator = @import("std").mem.Allocator;
-const ParseError = @import("string.zig").ParseError;
+const ParseError = @import("errors.zig").ParseError;
 const AnyValue = @This();
 
+/// The fully qualified name of the underlying type, as returned by `@typeName`.
+type_name: []const u8,
 /// A pointer to the variable value with all type information stripped.
 value_ptr: *anyopaque,
 /// The function used to parse a string into a value.
@@ -26,11 +28,10 @@ pub fn parse(self: AnyValue, str: []const u8) ParseError!void {
     return self.parse_func(str, self.value_ptr);
 }
 
-/// Returns a user-friendly name for the value type (e.g. "int", "bool", etc.)
+/// Returns a user-friendly name for the value type as used in an argument.
 ///
-/// This can be used in help messages to indicate the
-/// expected type for a user to supply.
-pub fn usageName(self: AnyValue) []const u8 {
+/// This can be used in help messages to indicate the expected type for a user to supply.
+pub fn argName(self: AnyValue) []const u8 {
     return self.argname_func();
 }
 

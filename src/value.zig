@@ -10,7 +10,7 @@ const ParseError = @import("errors.zig").ParseError;
 
 /// Prototype of a function that can parse a string into type `T`.
 pub fn ParseFunc(comptime T: type) type {
-    return *const fn (str: []const u8, value_ptr: *T) string.ParseError!void;
+    return *const fn (str: []const u8, value_ptr: *T) ParseError!void;
 }
 
 /// Prototype of a function that can return the string representation for a value of type `T`.
@@ -40,6 +40,7 @@ pub fn Value(comptime T: type, comptime parse_func: ParseFunc(T)) type {
 
         pub fn any(self: Self) AnyValue {
             return AnyValue{
+                .type_name = @typeName(T),
                 .value_ptr = @ptrCast(self.value_ptr),
                 .parse_func = parseImpl,
                 .string_func = stringImpl,
