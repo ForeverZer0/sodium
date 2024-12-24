@@ -1,6 +1,6 @@
 //! Describes a flag that can be parsed from command-line arguments.
 //!
-//! Unless otherwise stated explicitly, all fields should be considered private.
+//! Unless otherwise stated explicitly, all fields should be considered read-only.
 //! This type is intended to be exclusively interacted with via a `FlagSet`.
 
 const std = @import("std");
@@ -102,13 +102,26 @@ pub fn create(allocator: Allocator, name: []const u8, shorthand: ?u8, usage: []c
 /// Creates a deep-copy of another flag and returns it.
 pub fn dupe(allocator: Allocator, other: *Flag) Allocator.Error!*Flag {
     var flag = try allocator.create(Flag);
-    errdefer flag.destroy(allocator);
-    // // Zero the values so if an error occurs, destroy() won't segfault.
-    // flag.* =
+    errdefer allocator.free(flag);
+    // Initialize to zero so if an error occurs midway though,
+    // the deferred called to destroy won't segfault.
+    flag.* = .{
+        .name = &.{},
+        .usage = &.{},
+        .aliases = .{},
+        .shorthand = null,
+        .value = undefined,
+        .default = null,
+        .default_no_opt = null,
+        .deprecated = null,
+        .deprecated_shorthand = null,
+        .changed = false,
+        .hidden = false,
+        .annotations = .{},
+    };
 
     flag.name = try allocator.dupe(u8, other.name);
     flag.usage = try allocator.dupe(u8, other.usage);
-
     if (other.default) |str| flag.default = try allocator.dupe(u8, str);
     if (other.default_no_opt) |str| flag.default_no_opt = try allocator.dupe(u8, str);
     if (other.deprecated) |str| flag.deprecated = try allocator.dupe(u8, str);
@@ -139,8 +152,8 @@ pub fn dupe(allocator: Allocator, other: *Flag) Allocator.Error!*Flag {
 
 /// Frees all memory stored in the flag and invalidates its pointer.
 pub fn destroy(self: *Flag, allocator: Allocator) void {
-    allocator.free(self.name);
-    allocator.free(self.usage);
+    if (self.name.len > 0) allocator.free(self.name);
+    if (self.usage.len > 0) allocator.free(self.usage);
     if (self.default) |str| allocator.free(str);
     if (self.default_no_opt) |str| allocator.free(str);
     if (self.deprecated) |str| allocator.free(str);
