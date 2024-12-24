@@ -6,7 +6,7 @@ const expectEqual = std.testing.expectEqual;
 const expectEqualStrings = std.testing.expectEqualStrings;
 
 const string = @import("string.zig");
-const ParseError = string.ParseError;
+const ParseError = @import("errors.zig").ParseError;
 
 /// Prototype of a function that can parse a string into type `T`.
 pub fn ParseFunc(comptime T: type) type {

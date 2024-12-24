@@ -1,7 +1,7 @@
 const std = @import("std");
 
 const string = @import("string.zig");
-const ParseError = string.ParseError;
+const ParseError = @import("errors.zig").ParseError;
 const Value = @import("value.zig").Value;
 
 /// Returns a wrapper type for a string type.
