@@ -1,3 +1,5 @@
+const std = @import("std");
+
 /// Error set for string-parsing related errors.
 pub const ParseError = error{
     /// An empty string was given.
@@ -16,3 +18,33 @@ pub const ParseError = error{
     /// and the enum is not marked non-exhaustive.
     InvalidEnumTag,
 };
+
+/// Error set for incorrect input given by a user.
+pub const UserError = error{
+    /// A required argument for a flag was missing.
+    MissingArgument,
+    /// The given argument was not valid for the flag.
+    InvalidArgument,
+    /// An undefined flag name was specified.
+    UnknownFlag,
+} || ParseError;
+
+/// Set of errors used throughout the library.
+pub const Error = error{
+    /// A required string value was empty or only whitespace.
+    EmptyString,
+    /// An invalid character in a string.
+    InvalidFlagName,
+    /// A shorthand value is not an ASCII letter (a-z or A-Z).
+    InvalidShorthand,
+    /// A flag with the same name/alias is already defined.
+    DuplicateName,
+    /// A flag with the same shorthand value is already defined.
+    DuplicateShorthand,
+    /// An attempt to convert a string into the incorrect type.
+    TypeMismatch,
+    /// An undefined flag name was specified.
+    UnknownFlag,
+    ///
+    Overflow,
+} || std.mem.Allocator.Error || UserError;
