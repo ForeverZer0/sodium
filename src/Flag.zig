@@ -46,15 +46,14 @@ deprecated: ?[]const u8,
 /// If the shorthand flag is deprecated, this string provides a message with alternative or explanation.
 /// A `null` value indicates the shorthand flag is not deprecated.
 deprecated_shorthand: ?[]const u8,
-/// Indicates if the value has been set during parsing.
-changed: bool,
-/// Indicates if flag will be displayed in help/usage text.
-/// Hidden flags will function normally.
-hidden: bool,
 /// Arbitrary metadata associated with the flag.
 annotations: Annotations,
 /// Stores the number of times the flag was explicitly set during parsing.
-set_count: usize,
+/// A non-zero value indicates that the value was set during parsing.
+visits: usize,
+/// Indicates if flag will be displayed in help/usage text.
+/// Hidden flags will function normally.
+hidden: bool,
 
 /// Allocates and initializes a new `Flag` with the specified configuration.
 ///
@@ -92,10 +91,9 @@ pub fn create(allocator: Allocator, name: []const u8, shorthand: ?u8, usage: []c
         .default_no_opt = null,
         .deprecated = null,
         .deprecated_shorthand = null,
-        .changed = false,
         .hidden = false,
         .annotations = .{},
-        .set_count = 0,
+        .visits = 0,
     };
 
     // Ensure that bool values have a default "true" value
@@ -122,10 +120,9 @@ pub fn dupe(self: *const Flag, allocator: Allocator) Allocator.Error!*Flag {
         .default_no_opt = null,
         .deprecated = null,
         .deprecated_shorthand = null,
-        .changed = false,
         .hidden = false,
         .annotations = .{},
-        .set_count = 0,
+        .visits = 0,
     };
 
     flag.name = try allocator.dupe(u8, self.name);

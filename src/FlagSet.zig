@@ -313,19 +313,19 @@ pub fn setValue(self: *FlagSet, name: []const u8, value: []const u8) !void {
             return err;
         };
 
-        if (!flag.changed) {
+        // Place the flag in the ordered list of encountered flags.
+        if (flag.visits == 0) {
             try self.actual.put(self.allocator, flag.name, flag);
             try self.actual_ordered.append(self.allocator, flag);
-            flag.changed = true;
         }
+        // Increment the number of times the flag was encountered
+        flag.visits += 1;
 
         // Output deprecated message when defined
         if (flag.deprecated) |msg| {
             const writer = self.getOutput();
             try std.fmt.format(writer, "flag --{s} has been deprecated, {s}\n", .{ flag.name, msg });
         }
-        // Increment the number of times the flag was set
-        flag.set_count += 1;
     } else return error.UnknownFlag;
 }
 
@@ -441,25 +441,6 @@ fn sortFlags(allocator: Allocator, unsorted: FlagList) Allocator.Error!FlagList 
     result.appendSliceAssumeCapacity(unsorted.items);
     std.mem.sort(*Flag, result.items, void{}, Compare.lessThan);
     return result;
-}
-
-/// Indicates if a flag with the given name was parsed.
-/// Returns `false` if the flag does not exist, but does not cause an error.
-pub fn isSet(self: *const FlagSet, name: []const u8) bool {
-    if (self.getFlag(name, true)) |flag| {
-        return flag.set_count > 0;
-    }
-    return false;
-}
-
-/// Gets the number of times the flag was parsed from arguments.
-///
-/// For example, `pacman -Syyu` would return 2 for its y (refresh) flag.
-pub fn getSetCount(self: *const FlagSet, name: []const u8) usize {
-    if (self.getFlag(name, true)) |flag| {
-        return flag.set_count;
-    }
-    return 0;
 }
 
 /// Defines an alternative name that maps to the same flag.
@@ -588,8 +569,19 @@ pub fn annotation(self: *const FlagSet, name: []const u8, key: []const u8) ?[]co
 /// Returns an error if the flag does not exist.
 pub fn isChanged(self: *const FlagSet, name: []const u8) Error!bool {
     if (self.getFlag(name, true)) |flag| {
-        return flag.changed;
+        return flag.visits > 0;
     } else return error.UnknownFlag;
+}
+
+/// Gets the number of times the flag was parsed from arguments.
+/// For example, `pacman -Syyu` would return 2 for its "y" (refresh) flag.
+///
+/// Returns zero if the flag does not exist.
+pub fn getOccurrenceCount(self: *const FlagSet, name: []const u8) usize {
+    if (self.getFlag(name, true)) |flag| {
+        return flag.visits;
+    }
+    return 0;
 }
 
 /// Prints the default usage text.
@@ -743,7 +735,7 @@ pub fn parseArgsFromCommandLine(self: *FlagSet) !void {
 pub fn parseArgs(self: *FlagSet, arguments: ArgList) !void {
     if (arguments.len == 0) return;
     // Clear the set count
-    for (self.defined_ordered.items) |flag| flag.set_count = 0;
+    for (self.defined_ordered.items) |flag| flag.visits = 0;
 
     var list = std.ArrayList([]const u8).init(self.allocator);
     defer list.deinit();
