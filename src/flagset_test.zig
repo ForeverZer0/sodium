@@ -50,6 +50,7 @@ test "shorthand joined" {
     try expectEqual(true, recursive);
     try expectEqual(true, sync);
     try expectEqual(false, follow);
+    try expectEqual(1, flags.len_at_terminator.?);
 
     const usages = try flags.flagUsages(allocator, 0);
     defer allocator.free(usages);

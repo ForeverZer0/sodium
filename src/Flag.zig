@@ -107,7 +107,7 @@ pub fn create(allocator: Allocator, name: []const u8, shorthand: ?u8, usage: []c
 }
 
 /// Creates a deep-copy of another flag and returns it.
-pub fn dupe(allocator: Allocator, other: *Flag) Allocator.Error!*Flag {
+pub fn dupe(self: *const Flag, allocator: Allocator) Allocator.Error!*Flag {
     var flag = try allocator.create(Flag);
     errdefer flag.destroy(allocator);
     // Initialize to zero so if an error occurs midway though,
@@ -128,16 +128,16 @@ pub fn dupe(allocator: Allocator, other: *Flag) Allocator.Error!*Flag {
         .set_count = 0,
     };
 
-    flag.name = try allocator.dupe(u8, other.name);
-    flag.usage = try allocator.dupe(u8, other.usage);
-    if (other.default) |str| flag.default = try allocator.dupe(u8, str);
-    if (other.default_no_opt) |str| flag.default_no_opt = try allocator.dupe(u8, str);
-    if (other.deprecated) |str| flag.deprecated = try allocator.dupe(u8, str);
-    if (other.deprecated_shorthand) |str| flag.deprecated_shorthand = try allocator.dupe(u8, str);
+    flag.name = try allocator.dupe(u8, self.name);
+    flag.usage = try allocator.dupe(u8, self.usage);
+    if (self.default) |str| flag.default = try allocator.dupe(u8, str);
+    if (self.default_no_opt) |str| flag.default_no_opt = try allocator.dupe(u8, str);
+    if (self.deprecated) |str| flag.deprecated = try allocator.dupe(u8, str);
+    if (self.deprecated_shorthand) |str| flag.deprecated_shorthand = try allocator.dupe(u8, str);
 
-    if (other.annotations.size == 0) return flag;
-    try flag.annotations.ensureTotalCapacity(allocator, other.annotations.size);
-    var iter = other.annotations.iterator();
+    if (self.annotations.size == 0) return flag;
+    try flag.annotations.ensureTotalCapacity(allocator, self.annotations.size);
+    var iter = self.annotations.iterator();
     while (iter.next()) |entry| {
         const key = try allocator.dupe(u8, entry.key_ptr.*);
         errdefer allocator.free(key);

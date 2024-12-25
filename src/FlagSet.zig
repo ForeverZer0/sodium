@@ -17,7 +17,7 @@ const FlagSet = @This();
 /// A dynamically-sized list of flags.
 pub const FlagList = std.ArrayListUnmanaged(*Flag);
 
-/// Because "[]const []const u8" doesn't make me feel nice.
+/// "[]const []const u8" is gross.
 const ArgList = []const []const u8;
 
 /// A hashmap containing flags, with their names as keys.
@@ -30,7 +30,7 @@ pub const FlagIterator = struct {
     /// The items to be yielded.
     items: []const *Flag,
 
-    /// Yields the next item in the iterator, or `null` when all items have been exhausted.
+    /// Yields the next item in the iterator, or `null` when items have been exhausted.
     pub fn next(self: *FlagIterator) ?*Flag {
         if (self.index >= self.items.len) return null;
         defer self.index += 1;
@@ -97,6 +97,7 @@ ignore_unknown: bool,
 /// Default is `true`, set to `false` to disable.
 shorthand_help: bool,
 
+/// Initializes a new `FlagSet` with the specified allocator.
 pub fn init(allocator: Allocator, name: []const u8) Error!FlagSet {
     const set_name = try allocator.dupe(u8, name);
     errdefer allocator.free(set_name);
@@ -122,13 +123,6 @@ pub fn init(allocator: Allocator, name: []const u8) Error!FlagSet {
         .ignore_unknown = false,
         .shorthand_help = true,
     };
-}
-
-/// Prints an error message to the user, and optionally exits the application when `exit_on_error` is `true`.
-fn printError(self: *FlagSet, comptime fmt: []const u8, args: anytype) void {
-    const output = self.getOutput();
-    std.fmt.format(output, fmt, args) catch {};
-    if (self.exit_on_error) std.process.exit(1);
 }
 
 /// Frees all memory and invalidates all pointers associated with the set.
@@ -177,7 +171,7 @@ pub fn merge(self: *FlagSet, other: *FlagSet, ignore_duplicates: bool) Error!voi
             }
         }
         // Create deep-clone of the flag and add it
-        const copy = try Flag.dupe(self.allocator, flag);
+        const copy = try flag.dupe(self.allocator);
         errdefer copy.destroy(self.allocator);
         try self.defined.put(self.allocator, copy.name, copy);
         try self.defined_ordered.append(self.allocator, copy);
@@ -204,7 +198,7 @@ pub fn addFlag(self: *FlagSet, comptime T: type, name: []const u8, shorthand: ?u
         .Vector => wrapper.Vector(T),
         .Pointer => |pointer| blk: {
             if (pointer.size != .Slice) @compileError("pointer types require a custom parsing implementation");
-            if (pointer.child != u8) @compileError("slices types must be \"[]const u8\" (string), found " ++ @typeName(T));
+            if (pointer.child != u8) @compileError("expected slice of type \"[]const u8\" (string), found " ++ @typeName(T));
             if (!pointer.is_const) @compileError("expected \"[]const u8\", found \"[]u8\"");
             break :blk wrapper.String;
         },
@@ -259,7 +253,7 @@ pub fn addFlagWithValue(self: *FlagSet, name: []const u8, shorthand: ?u8, usage:
 /// Tests if the set has any flags defined, optionally including those in a "hidden" state.
 ///
 /// A hidden flag functions normally, but does not appear in help/usage messages.
-pub fn hasFlags(self: *FlagSet, include_hidden: bool) bool {
+pub fn hasFlags(self: *const FlagSet, include_hidden: bool) bool {
     // Simply test if any flags have been added, hidden or not.
     if (include_hidden) return self.defined_ordered.items.len > 0;
     // Loop through the flags and determine if any are not hidden.
@@ -272,7 +266,7 @@ pub fn hasFlags(self: *FlagSet, include_hidden: bool) bool {
 /// Performs a look for a flag by the given name and returns it.
 /// When `aliases` is `true`, all flag aliases will also be searched for a match.
 /// Returns `null` when no matching flag was found.
-pub fn getFlag(self: *FlagSet, name: []const u8, aliases: bool) ?*Flag {
+pub fn getFlag(self: *const FlagSet, name: []const u8, aliases: bool) ?*Flag {
     // Since the happy-path is a matching name, check all of them before aliases.
     if (self.defined.get(name)) |flag| return flag;
 
@@ -286,7 +280,7 @@ pub fn getFlag(self: *FlagSet, name: []const u8, aliases: bool) ?*Flag {
 
 /// Gets the value of a flag as a string.
 /// The caller is responsible for freeing the returned memory.
-pub fn getValue(self: *FlagSet, allocator: Allocator, name: []const u8) Error![]u8 {
+pub fn getValue(self: *const FlagSet, allocator: Allocator, name: []const u8) Error![]u8 {
     if (self.getFlag(name, true)) |flag| {
         return flag.value.toString(allocator);
     }
@@ -337,7 +331,7 @@ pub fn setValue(self: *FlagSet, name: []const u8, value: []const u8) !void {
 
 /// Gets the value of a flag as its concrete type, or
 /// return an error when `T` is the incorrect type.
-pub fn getValueAs(self: *FlagSet, comptime T: type, name: []const u8) Error!T {
+pub fn getValueAs(self: *const FlagSet, comptime T: type, name: []const u8) Error!T {
     if (self.getFlag(name, true)) |flag| {
         if (!std.mem.eql(u8, @typeName(T), flag.value.value_type)) return error.TypeMismatch;
         return @as(*T, @ptrCast(@alignCast(flag.value.value_ptr))).*;
@@ -373,13 +367,20 @@ pub fn setValueAs(self: *FlagSet, comptime T: type, name: []const u8, value: T) 
 
 /// Performs a lookup for a flag by the given shorthand letter and returns it.
 /// Returns `null` when no matching flag was found.
-pub fn getShorthand(self: *FlagSet, chr: u8) ?*Flag {
+pub fn getShorthand(self: *const FlagSet, chr: u8) ?*Flag {
     return self.shorthands.get(chr);
+}
+
+/// Prints an error message to the user, and optionally exits the application when `exit_on_error` is `true`.
+fn printError(self: *const FlagSet, comptime fmt: []const u8, args: anytype) void {
+    const output = self.getOutput();
+    std.fmt.format(output, fmt, args) catch {};
+    if (self.exit_on_error) std.process.exit(1);
 }
 
 /// Returns a writer where help/usage messages are written to.
 /// Defaults to stderr when the `output` field is unset.
-pub fn getOutput(self: *FlagSet) std.io.AnyWriter {
+pub fn getOutput(self: *const FlagSet) std.io.AnyWriter {
     return self.output orelse blk: {
         const stderr_file = std.io.getStdErr();
         const stderr = stderr_file.writer();
@@ -444,7 +445,7 @@ fn sortFlags(allocator: Allocator, unsorted: FlagList) Allocator.Error!FlagList 
 
 /// Indicates if a flag with the given name was parsed.
 /// Returns `false` if the flag does not exist, but does not cause an error.
-pub fn isSet(self: *FlagSet, name: []const u8) bool {
+pub fn isSet(self: *const FlagSet, name: []const u8) bool {
     if (self.getFlag(name, true)) |flag| {
         return flag.set_count > 0;
     }
@@ -454,7 +455,7 @@ pub fn isSet(self: *FlagSet, name: []const u8) bool {
 /// Gets the number of times the flag was parsed from arguments.
 ///
 /// For example, `pacman -Syyu` would return 2 for its y (refresh) flag.
-pub fn getSetCount(self: *FlagSet, name: []const u8) usize {
+pub fn getSetCount(self: *const FlagSet, name: []const u8) usize {
     if (self.getFlag(name, true)) |flag| {
         return flag.set_count;
     }
@@ -463,7 +464,7 @@ pub fn getSetCount(self: *FlagSet, name: []const u8) usize {
 
 /// Defines an alternative name that maps to the same flag.
 /// e.g. "--silent" and "--quiet" can be used interchangeably.
-pub fn alias(self: *FlagSet, name: []const u8, alias_name: []const u8) Error!void {
+pub fn alias(self: *const FlagSet, name: []const u8, alias_name: []const u8) Error!void {
     if (self.getFlag(alias_name, true)) |_| return error.DuplicateName;
     if (self.getFlag(name, false)) |flag| {
         const owned = try self.allocator.dupe(u8, alias_name);
@@ -473,7 +474,7 @@ pub fn alias(self: *FlagSet, name: []const u8, alias_name: []const u8) Error!voi
 
 /// Marks a flag with the given name as "hidden".
 /// Returns an error if the flag does not exist.
-pub fn hide(self: *FlagSet, name: []const u8) Error!void {
+pub fn hide(self: *const FlagSet, name: []const u8) Error!void {
     if (self.getFlag(name, true)) |flag| {
         flag.hidden = true;
     } else return error.UnknownFlag;
@@ -481,7 +482,7 @@ pub fn hide(self: *FlagSet, name: []const u8) Error!void {
 
 /// Sets the default value of a flag.
 /// The value must successfully parse or an error is returned.
-pub fn setDefault(self: *FlagSet, name: []const u8, value: []const u8) Error!void {
+pub fn setDefault(self: *const FlagSet, name: []const u8, value: []const u8) Error!void {
     if (self.getFlag(name, true)) |flag| {
         try flag.value.parse(value);
         if (flag.default) |str| self.allocator.free(str);
@@ -493,7 +494,7 @@ pub fn setDefault(self: *FlagSet, name: []const u8, value: []const u8) Error!voi
 /// When this value is not set, the flag requires a user-defined argument.
 ///
 /// Boolean flags automatically have a value of "true", and do not need set explicitly.
-pub fn setDefaultNoOpt(self: *FlagSet, name: []const u8, value: []const u8) Error!void {
+pub fn setDefaultNoOpt(self: *const FlagSet, name: []const u8, value: []const u8) Error!void {
     if (self.getFlag(name, true)) |flag| {
         if (flag.default_no_opt) |str| self.allocator.free(str);
         flag.default_no_opt = try self.allocator.dupe(u8, value);
@@ -502,7 +503,7 @@ pub fn setDefaultNoOpt(self: *FlagSet, name: []const u8, value: []const u8) Erro
 
 /// Marks a flag as deprecated, which will print the specified usage message when it is used.
 /// Deprecating a flag automatically hides it from usage text.
-pub fn deprecate(self: *FlagSet, name: []const u8, usage: []const u8) Error!void {
+pub fn deprecate(self: *const FlagSet, name: []const u8, usage: []const u8) Error!void {
     if (self.getFlag(name, false)) |flag| {
         if (string.isEmptyOrWhitespace(usage)) return error.EmptyString;
         if (flag.deprecated) |str| self.allocator.free(str);
@@ -513,7 +514,7 @@ pub fn deprecate(self: *FlagSet, name: []const u8, usage: []const u8) Error!void
 
 /// Marks a shorthand flag as deprecated, which will print the specified usage message when it is used.
 /// Deprecating a shorthand flag automatically hides it from usage text.
-pub fn deprecateShorthand(self: *FlagSet, shorthand: u8, usage: []const u8) Error!void {
+pub fn deprecateShorthand(self: *const FlagSet, shorthand: u8, usage: []const u8) Error!void {
     if (self.shorthands.get(shorthand)) |flag| {
         if (string.isEmptyOrWhitespace(usage)) return error.EmptyString;
         if (flag.deprecated_shorthand) |str| self.allocator.free(str);
@@ -524,7 +525,7 @@ pub fn deprecateShorthand(self: *FlagSet, shorthand: u8, usage: []const u8) Erro
 /// Sets an arbitrary annotation on a flag.
 ///
 /// This allows programs to assign additional metadata, such as shell completion information, etc.
-pub fn annotate(self: *FlagSet, name: []const u8, key: []const u8, entry: []const u8) Error!void {
+pub fn annotate(self: *const FlagSet, name: []const u8, key: []const u8, entry: []const u8) Error!void {
     if (self.getFlag(name, true)) |flag| {
         // Create a copy of the key, and attempt to get existing entry, creating if not found.
         const owned_key = try self.allocator.dupe(u8, key);
@@ -548,7 +549,7 @@ pub fn annotate(self: *FlagSet, name: []const u8, key: []const u8, entry: []cons
 /// Sets a slice of arbitrary annotations on a flag.
 ///
 /// This allows programs to assign additional metadata, such as shell completion information.
-pub fn annotateSlice(self: *FlagSet, name: []const u8, key: []const u8, entries: []const []const u8) Error!void {
+pub fn annotateSlice(self: *const FlagSet, name: []const u8, key: []const u8, entries: []const []const u8) Error!void {
     // Early out if no values
     if (entries.len == 0) return;
     if (self.getFlag(name, true)) |flag| {
@@ -576,7 +577,7 @@ pub fn annotateSlice(self: *FlagSet, name: []const u8, key: []const u8, entries:
 
 /// Gets the annotations for the flag with the given name and key.
 /// Returns `null` if the flag cannot be found, or no annotation with the key exist.
-pub fn annotation(self: *FlagSet, name: []const u8, key: []const u8) ?[]const []const u8 {
+pub fn annotation(self: *const FlagSet, name: []const u8, key: []const u8) ?[]const []const u8 {
     if (self.getFlag(name, true)) |flag| {
         if (flag.annotations.get(key)) |list| return list.items;
     }
@@ -585,7 +586,7 @@ pub fn annotation(self: *FlagSet, name: []const u8, key: []const u8) ?[]const []
 
 /// Tests if a flag with the given name as been explicitly set during parsing.
 /// Returns an error if the flag does not exist.
-pub fn isChanged(self: *FlagSet, name: []const u8) Error!bool {
+pub fn isChanged(self: *const FlagSet, name: []const u8) Error!bool {
     if (self.getFlag(name, true)) |flag| {
         return flag.changed;
     } else return error.UnknownFlag;
@@ -828,8 +829,6 @@ fn parseLongArg(self: *FlagSet, str: []const u8, arguments: ArgList) !ArgList {
     const flag = self.getFlag(name, true) orelse {
         if (std.mem.eql(u8, "help", name)) {
             try self.printDefaults();
-            // TODO: Create an error.Help to let caller know?
-            // It would allow for the convention of "app --help cmd"
             return args;
         }
 

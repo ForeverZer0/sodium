@@ -1,4 +1,4 @@
-const std = @import("std");
+const AllocatorError = @import("std").mem.Allocator.Error;
 
 /// Error set for string-parsing related errors.
 pub const ParseError = error{
@@ -46,4 +46,4 @@ pub const Error = error{
     /// The user has used the undefined "help" command.
     /// This is typically not an actual "error", but is used as a signal to callers.
     HelpRequested,
-} || std.mem.Allocator.Error || UserError;
+} || AllocatorError || UserError;
