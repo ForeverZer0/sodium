@@ -53,6 +53,8 @@ changed: bool,
 hidden: bool,
 /// Arbitrary metadata associated with the flag.
 annotations: Annotations,
+/// Stores the number of times the flag was explicitly set during parsing.
+set_count: usize,
 
 /// Allocates and initializes a new `Flag` with the specified configuration.
 ///
@@ -93,6 +95,7 @@ pub fn create(allocator: Allocator, name: []const u8, shorthand: ?u8, usage: []c
         .changed = false,
         .hidden = false,
         .annotations = .{},
+        .set_count = 0,
     };
 
     // Ensure that bool values have a default "true" value
@@ -122,6 +125,7 @@ pub fn dupe(allocator: Allocator, other: *Flag) Allocator.Error!*Flag {
         .changed = false,
         .hidden = false,
         .annotations = .{},
+        .set_count = 0,
     };
 
     flag.name = try allocator.dupe(u8, other.name);

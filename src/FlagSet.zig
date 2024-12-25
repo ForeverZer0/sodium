@@ -71,7 +71,7 @@ len_at_terminator: ?usize,
 actual: FlagMap,
 /// Mapping of all known flags, including those not set by the command line arguments.
 /// This field should only be used in a read-only context.
-formal: FlagMap,
+defined: FlagMap,
 /// Mapping of shorthand arguments to flags.
 /// This field should only be used in a read-only context.
 shorthands: std.AutoHashMapUnmanaged(u8, *Flag),
@@ -80,13 +80,13 @@ shorthands: std.AutoHashMapUnmanaged(u8, *Flag),
 actual_ordered: FlagList,
 /// List of flags in the order they were defined.
 /// This field is private and for internal use only. See `iterator()`.
-formal_ordered: FlagList,
+defined_ordered: FlagList,
 /// List of flags parsed from the command line arguments in lexicographical order.
 /// This field is private and for internal use only. See `iterator()`.
 actual_sorted: FlagList,
 /// List of all defined flags in lexicographical order.
 /// This field is private and for internal use only. See `iterator()`.
-formal_sorted: FlagList,
+defined_sorted: FlagList,
 /// Writer where help/usage messages will be written to.
 /// Defaults to `stderr` when `null`, but can be overridden by assigning to this field.
 output: ?std.io.AnyWriter,
@@ -112,11 +112,11 @@ pub fn init(allocator: Allocator, name: []const u8) Error!FlagSet {
         .args = &.{},
         .len_at_terminator = null,
         .actual = .{},
-        .formal = .{},
+        .defined = .{},
         .actual_sorted = .{},
-        .formal_sorted = .{},
+        .defined_sorted = .{},
         .actual_ordered = .{},
-        .formal_ordered = .{},
+        .defined_ordered = .{},
         .shorthands = .{},
         .output = null,
         .ignore_unknown = false,
@@ -141,14 +141,14 @@ pub fn deinit(self: *FlagSet) void {
 
     self.actual_ordered.deinit(self.allocator);
     self.actual_sorted.deinit(self.allocator);
-    self.formal_sorted.deinit(self.allocator);
+    self.defined_sorted.deinit(self.allocator);
 
     self.shorthands.deinit(self.allocator);
     self.actual.deinit(self.allocator);
-    self.formal.deinit(self.allocator);
+    self.defined.deinit(self.allocator);
 
-    for (self.formal_ordered.items) |flag| flag.destroy(self.allocator);
-    self.formal_ordered.deinit(self.allocator);
+    for (self.defined_ordered.items) |flag| flag.destroy(self.allocator);
+    self.defined_ordered.deinit(self.allocator);
 }
 
 /// Merges another set into this one.
@@ -156,7 +156,7 @@ pub fn deinit(self: *FlagSet) void {
 /// When `ignore_duplicates` is `true`, flags in `other` that have conflicting
 /// name/shorthand/alias values will be skipped, otherwise an error is returned.
 pub fn merge(self: *FlagSet, other: *FlagSet, ignore_duplicates: bool) Error!void {
-    for (other.formal_ordered.items) |flag| {
+    for (other.defined_ordered.items) |flag| {
         // Check if the flag with the same name already exists
         if (self.getFlag(flag.name, true)) |_| {
             if (!ignore_duplicates) continue;
@@ -179,8 +179,8 @@ pub fn merge(self: *FlagSet, other: *FlagSet, ignore_duplicates: bool) Error!voi
         // Create deep-clone of the flag and add it
         const copy = try Flag.dupe(self.allocator, flag);
         errdefer copy.destroy(self.allocator);
-        try self.formal.put(self.allocator, copy.name, copy);
-        try self.formal_ordered.append(self.allocator, copy);
+        try self.defined.put(self.allocator, copy.name, copy);
+        try self.defined_ordered.append(self.allocator, copy);
     }
 }
 
@@ -227,7 +227,7 @@ pub fn addFlag(self: *FlagSet, comptime T: type, name: []const u8, shorthand: ?u
 /// If a flag with the same name, alias, or shorthand already exists, an error will be returned.
 pub fn addFlagDefault(self: *FlagSet, comptime T: type, name: []const u8, shorthand: ?u8, usage: []const u8, ptr: *T, default: []const u8) Error!void {
     try addFlag(self, T, name, shorthand, usage, ptr);
-    const flag = self.formal_ordered.items[self.formal_ordered.items.len - 1];
+    const flag = self.defined_ordered.items[self.defined_ordered.items.len - 1];
     try flag.value.parse(default);
     flag.default = try self.allocator.dupe(u8, default);
 }
@@ -250,9 +250,9 @@ pub fn addFlagWithValue(self: *FlagSet, name: []const u8, shorthand: ?u8, usage:
     const flag = try Flag.create(self.allocator, name, shorthand, usage, value);
     errdefer flag.destroy(self.allocator);
 
-    // Store the flag using its formal name, and optionally shorthand.
-    try self.formal.put(self.allocator, flag.name, flag);
-    try self.formal_ordered.append(self.allocator, flag);
+    // Store the flag using its defined name, and optionally shorthand.
+    try self.defined.put(self.allocator, flag.name, flag);
+    try self.defined_ordered.append(self.allocator, flag);
     if (flag.shorthand) |c| try self.shorthands.put(self.allocator, c, flag);
 }
 
@@ -261,9 +261,9 @@ pub fn addFlagWithValue(self: *FlagSet, name: []const u8, shorthand: ?u8, usage:
 /// A hidden flag functions normally, but does not appear in help/usage messages.
 pub fn hasFlags(self: *FlagSet, include_hidden: bool) bool {
     // Simply test if any flags have been added, hidden or not.
-    if (include_hidden) return self.formal_ordered.items.len > 0;
+    if (include_hidden) return self.defined_ordered.items.len > 0;
     // Loop through the flags and determine if any are not hidden.
-    for (self.formal_ordered.items) |flag| {
+    for (self.defined_ordered.items) |flag| {
         if (!flag.hidden) return true;
     }
     return false;
@@ -274,9 +274,9 @@ pub fn hasFlags(self: *FlagSet, include_hidden: bool) bool {
 /// Returns `null` when no matching flag was found.
 pub fn getFlag(self: *FlagSet, name: []const u8, aliases: bool) ?*Flag {
     // Since the happy-path is a matching name, check all of them before aliases.
-    if (self.formal.get(name)) |flag| return flag;
+    if (self.defined.get(name)) |flag| return flag;
 
-    if (aliases) for (self.formal_ordered.items) |flag| {
+    if (aliases) for (self.defined_ordered.items) |flag| {
         for (flag.aliases.items) |alias_name| {
             if (std.mem.eql(u8, alias_name, name)) return flag;
         }
@@ -330,6 +330,8 @@ pub fn setValue(self: *FlagSet, name: []const u8, value: []const u8) !void {
             const writer = self.getOutput();
             try std.fmt.format(writer, "flag --{s} has been deprecated, {s}\n", .{ flag.name, msg });
         }
+        // Increment the number of times the flag was set
+        flag.set_count += 1;
     } else return error.UnknownFlag;
 }
 
@@ -401,12 +403,12 @@ pub fn iterator(self: *FlagSet, sorted: bool, all: bool) Allocator.Error!FlagIte
     if (all) {
         list = if (sorted) blk: {
             // Sort now if needed
-            if (self.formal_ordered.items.len != self.formal_sorted.items.len) {
-                self.formal_sorted.deinit(self.allocator);
-                self.formal_sorted = try sortFlags(self.allocator, self.formal_ordered);
+            if (self.defined_ordered.items.len != self.defined_sorted.items.len) {
+                self.defined_sorted.deinit(self.allocator);
+                self.defined_sorted = try sortFlags(self.allocator, self.defined_ordered);
             }
-            break :blk self.formal_sorted;
-        } else self.formal_ordered;
+            break :blk self.defined_sorted;
+        } else self.defined_ordered;
     } else {
         list = if (sorted) blk: {
             // Sort now if needed
@@ -438,6 +440,25 @@ fn sortFlags(allocator: Allocator, unsorted: FlagList) Allocator.Error!FlagList 
     result.appendSliceAssumeCapacity(unsorted.items);
     std.mem.sort(*Flag, result.items, void{}, Compare.lessThan);
     return result;
+}
+
+/// Indicates if a flag with the given name was parsed.
+/// Returns `false` if the flag does not exist, but does not cause an error.
+pub fn isSet(self: *FlagSet, name: []const u8) bool {
+    if (self.getFlag(name, true)) |flag| {
+        return flag.set_count > 0;
+    }
+    return false;
+}
+
+/// Gets the number of times the flag was parsed from arguments.
+///
+/// For example, `pacman -Syyu` would return 2 for its y (refresh) flag.
+pub fn getSetCount(self: *FlagSet, name: []const u8) usize {
+    if (self.getFlag(name, true)) |flag| {
+        return flag.set_count;
+    }
+    return 0;
 }
 
 /// Defines an alternative name that maps to the same flag.
@@ -587,7 +608,7 @@ pub fn printDefaults(self: *FlagSet) !void {
 ///
 /// The caller is responsible for freeing the returned memory.
 pub fn flagUsages(self: *FlagSet, allocator: Allocator, columns: usize) Allocator.Error![]u8 {
-    var lines = try std.ArrayList([]u8).initCapacity(allocator, self.formal_ordered.items.len);
+    var lines = try std.ArrayList([]u8).initCapacity(allocator, self.defined_ordered.items.len);
     defer {
         for (lines.items) |line| allocator.free(line);
         lines.deinit();
@@ -690,7 +711,7 @@ fn writeArgument(flag: *Flag, writer: std.ArrayList(u8).Writer, type_name: []con
         if (std.mem.eql(u8, type_name, "string")) {
             try std.fmt.format(writer, " [{s}=\"{s}\"]", .{ arg_name, opt });
         } else if (std.mem.eql(u8, type_name, "bool")) {
-            // Omit for boolean flags
+            // Omit completely for boolean flags
             if (!std.mem.eql(u8, opt, "true")) {
                 try std.fmt.format(writer, " [{s}={s}]", .{ arg_name, opt });
             }
@@ -720,6 +741,8 @@ pub fn parseArgsFromCommandLine(self: *FlagSet) !void {
 /// The argument list should *NOT* contain the command/application name in the first position.
 pub fn parseArgs(self: *FlagSet, arguments: ArgList) !void {
     if (arguments.len == 0) return;
+    // Clear the set count
+    for (self.defined_ordered.items) |flag| flag.set_count = 0;
 
     var list = std.ArrayList([]const u8).init(self.allocator);
     defer list.deinit();
