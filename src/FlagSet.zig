@@ -1,3 +1,9 @@
+//! Top-level container type providing nearly the entire public API of the library.
+//!
+//! Provides the functionality to define and configure flags, as well as managing
+//! the memory and lifetimes of them. For this reason, it is important to avoid
+//! ever modifying the fields of a `Flag` directly, and always via its parent `FlagSet`.
+
 const std = @import("std");
 const string = @import("string.zig");
 const wrapper = @import("wrapper.zig");
@@ -5,8 +11,8 @@ const wrapper = @import("wrapper.zig");
 const Allocator = std.mem.Allocator;
 const AnyValue = @import("AnyValue.zig");
 const Error = @import("errors.zig").Error;
-const FlagSet = @This();
 const Flag = @import("Flag.zig");
+const FlagSet = @This();
 
 /// A dynamically-sized list of flags.
 pub const FlagList = std.ArrayListUnmanaged(*Flag);
@@ -387,8 +393,6 @@ pub fn getOutput(self: *FlagSet) std.io.AnyWriter {
 /// hence a possible allocation error being returned.
 pub fn iterator(self: *FlagSet, sorted: bool, all: bool) Allocator.Error!FlagIterator {
     var list: FlagList = undefined;
-
-    // TODO: Break this into separate sorted/ordered functions
 
     if (all) {
         list = if (sorted) blk: {

@@ -25,6 +25,31 @@ test "FlagSet" {
     try expectEqual(LogLevel.none, log_level);
     try flags.setValue("log-level", "warnings");
     try expectEqual(LogLevel.warnings, log_level);
+}
+
+test "shorthand joined" {
+    var flags = try FlagSet.init(allocator, "sodium");
+    defer flags.deinit();
+
+    var verbose: bool = false;
+    var archive: bool = false;
+    var recursive: bool = false;
+    var sync: bool = false;
+    var follow: bool = false;
+
+    try flags.addFlag(bool, "verbose", 'v', "verbose output", &verbose);
+    try flags.addFlag(bool, "archive", 'a', "preserve file permissions", &archive);
+    try flags.addFlag(bool, "recursive", 'r', "search directories recursively", &recursive);
+    try flags.addFlag(bool, "sync", 's', "sync database before executing", &sync);
+    try flags.addFlag(bool, "follow-links", 'f', "follow symbolic links", &follow);
+
+    try flags.parseArgs(&[_][]const u8{"-vrs"});
+
+    try expectEqual(true, verbose);
+    try expectEqual(false, archive);
+    try expectEqual(true, recursive);
+    try expectEqual(true, sync);
+    try expectEqual(false, follow);
 
     const usages = try flags.flagUsages(allocator, 0);
     defer allocator.free(usages);

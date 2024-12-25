@@ -95,6 +95,11 @@ pub fn create(allocator: Allocator, name: []const u8, shorthand: ?u8, usage: []c
         .annotations = .{},
     };
 
+    // Ensure that bool values have a default "true" value
+    if (std.mem.eql(u8, "bool", value.type_name)) {
+        flag.default_no_opt = try allocator.dupe(u8, "true");
+    }
+
     return flag;
 }
 
