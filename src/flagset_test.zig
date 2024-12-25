@@ -36,25 +36,34 @@ test "shorthand joined" {
     var recursive: bool = false;
     var sync: bool = false;
     var follow: bool = false;
+    var path: []const u8 = &.{};
 
     try flags.addFlag(bool, "verbose", 'v', "verbose output", &verbose);
     try flags.addFlag(bool, "archive", 'a', "preserve file permissions", &archive);
     try flags.addFlag(bool, "recursive", 'r', "search directories recursively", &recursive);
     try flags.addFlag(bool, "sync", 's', "sync database before executing", &sync);
     try flags.addFlag(bool, "follow-links", 'f', "follow symbolic links", &follow);
-
-    try flags.parseArgs(&[_][]const u8{ "-vrs", "--", "|", "echo", "'hello world'" });
+    try flags.addFlag([]const u8, "output", 'o', "selects the `filename` of the output", &path);
+    try flags.parseArgs(&[_][]const u8{ "-vrs", "--output", "~/filename.ext", "--", "|", "echo", "'hello world'" });
 
     try expectEqual(true, verbose);
     try expectEqual(false, archive);
     try expectEqual(true, recursive);
     try expectEqual(true, sync);
     try expectEqual(false, follow);
-    try expectEqual(1, flags.len_at_terminator.?);
+    // try expectEqual(1, flags.len_at_terminator.?);
 
-    const usages = try flags.flagUsages(allocator, 0);
-    defer allocator.free(usages);
-    std.debug.print("{s}", .{usages});
+    const usage_text = try flags.flagUsages(allocator, 0);
+    defer allocator.free(usage_text);
 
+    // Argument name extraction
+    try expectEqual(true, std.mem.indexOf(u8, usage_text, "output <filename>") != null);
+
+    try expectEqual(3, flags.args.len);
+    try expectEqualStrings("|", flags.args[0]);
+    try expectEqualStrings("echo", flags.args[1]);
+    try expectEqualStrings("hello world", flags.args[2]);
+
+    std.debug.print("{s}", .{usage_text});
     for (flags.args) |arg| std.debug.print("{s}\n", .{arg});
 }

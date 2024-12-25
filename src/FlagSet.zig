@@ -751,12 +751,12 @@ pub fn parseArgs(self: *FlagSet, arguments: ArgList) !void {
             if (!self.interspersed) {
                 // interspersed flags not allowed, so we reached the end
                 try list.ensureUnusedCapacity(1 + args.len);
-                list.appendAssumeCapacity(try self.allocator.dupe(u8, str));
-                for (args) |s| list.appendAssumeCapacity(try self.allocator.dupe(u8, s));
+                list.appendAssumeCapacity(try self.allocator.dupe(u8, unquote(str)));
+                for (args) |s| list.appendAssumeCapacity(try self.allocator.dupe(u8, unquote(s)));
                 break;
             }
             // Otherwise append the non-flag argument to the list and loop
-            try list.append(try self.allocator.dupe(u8, str));
+            try list.append(try self.allocator.dupe(u8, unquote(str)));
             continue;
         }
 
@@ -765,7 +765,7 @@ pub fn parseArgs(self: *FlagSet, arguments: ArgList) !void {
             if (str.len == 2) {
                 self.len_at_terminator = list.items.len;
                 try list.ensureUnusedCapacity(args.len);
-                for (args) |s| list.appendAssumeCapacity(try self.allocator.dupe(u8, s));
+                for (args) |s| list.appendAssumeCapacity(try self.allocator.dupe(u8, unquote(s)));
                 break;
             }
             args = try self.parseLongArg(str, args);
@@ -799,6 +799,22 @@ fn stripUnknownFlagValue(args: ArgList) ArgList {
     }
 
     return &.{};
+}
+
+fn unquote(str: []const u8) []const u8 {
+    if (str.len < 2) return str;
+    const quote = str[0];
+    return switch (quote) {
+        '\'', '"', '`' => if (str[str.len - 1] == quote) str[1 .. str.len - 1] else str,
+        else => str,
+    };
+}
+
+test "unquote" {
+    // single-quoted
+    try std.testing.expectEqualStrings("Hello World", unquote("'Hello World'"));
+    // double-quoted
+    try std.testing.expectEqualStrings("Hello World", unquote("\"Hello World\""));
 }
 
 /// Parses a long-form (e.g. "--flag") argument.
@@ -850,7 +866,7 @@ fn parseLongArg(self: *FlagSet, str: []const u8, arguments: ArgList) !ArgList {
         }
     }
 
-    self.setValue(name, value.?) catch |err| {
+    self.setValue(name, unquote(value.?)) catch |err| {
         self.printError("invalid argument: \"{s}\" (--{s})\n", .{ value.?, name });
         return err;
     };
@@ -924,7 +940,7 @@ fn parseShortSingle(self: *FlagSet, shorthands: []const u8, args: ArgList, out_a
         try std.fmt.format(output, "flag shorthand -{c} has been deprecated: {s}\n", .{ c, msg });
     }
 
-    self.setValue(flag.name, value.?) catch |err| {
+    self.setValue(flag.name, unquote(value.?)) catch |err| {
         self.printError("invalid argument: \"{s}\" (-{c})\n", .{ value.?, c });
         return err;
     };
