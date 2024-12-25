@@ -93,6 +93,9 @@ output: ?std.io.AnyWriter,
 /// Indicates if unknown flags will be ignored during parsing.
 /// When `true`, unknown flags are skipped, otherwise they result in errors.
 ignore_unknown: bool,
+/// Indicates if a shorthand "-h" will map to the built-in "--help" flag.
+/// Default is `true`, set to `false` to disable.
+shorthand_help: bool,
 
 pub fn init(allocator: Allocator, name: []const u8) Error!FlagSet {
     const set_name = try allocator.dupe(u8, name);
@@ -117,6 +120,7 @@ pub fn init(allocator: Allocator, name: []const u8) Error!FlagSet {
         .shorthands = .{},
         .output = null,
         .ignore_unknown = false,
+        .shorthand_help = true,
     };
 }
 
@@ -690,11 +694,11 @@ fn writeArgument(flag: *Flag, writer: std.ArrayList(u8).Writer, type_name: []con
             if (!std.mem.eql(u8, opt, "true")) {
                 try std.fmt.format(writer, " [{s}={s}]", .{ arg_name, opt });
             }
-        } else if (std.mem.eql(u8, type_name, "count")) {
-            // TODO: Remove this branch?
-            if (!std.mem.eql(u8, opt, "+1")) {
-                try std.fmt.format(writer, " [{s}={s}]", .{ arg_name, opt });
-            }
+            // } else if (std.mem.eql(u8, type_name, "count")) {
+            //     // TODO: Remove this branch?
+            //     if (!std.mem.eql(u8, opt, "+1")) {
+            //         try std.fmt.format(writer, " [{s}={s}]", .{ arg_name, opt });
+            //     }
         } else {
             try std.fmt.format(writer, " [{s}={s}]", .{ arg_name, opt });
         }
@@ -705,11 +709,11 @@ fn writeArgument(flag: *Flag, writer: std.ArrayList(u8).Writer, type_name: []con
 
 /// Parses the command-line arguments of the running application.
 pub fn parseArgsFromCommandLine(self: *FlagSet) !void {
-    // TODO: Error?
+    // Command-line arguments do not change, and will only be parsed once.
     if (self.parsed) return;
     const args = try std.process.argsAlloc(self.allocator);
     defer std.process.argsFree(self.allocator, args);
-    return parseArgs(self, args[1..]);
+    try parseArgs(self, args[1..]);
 }
 
 /// Parses the specified command-line arguments.
@@ -717,38 +721,40 @@ pub fn parseArgsFromCommandLine(self: *FlagSet) !void {
 pub fn parseArgs(self: *FlagSet, arguments: ArgList) !void {
     if (arguments.len == 0) return;
 
-    var list = try std.ArrayList([]const u8).initCapacity(self.allocator, arguments.len);
+    var list = std.ArrayList([]const u8).init(self.allocator);
     defer list.deinit();
 
     // Create a mutable copy with the same backing storage
     var args = arguments;
     while (args.len > 0) {
-        const s = args[0];
+        const str = args[0];
         args = args[1..];
 
         // Not a flag
-        if (s.len <= 1 or s[0] != '-') {
+        if (str.len == 0 or str[0] != '-' or str.len == 1) {
             if (!self.interspersed) {
                 // interspersed flags not allowed, so we reached the end
-                list.appendAssumeCapacity(s);
-                list.appendSliceAssumeCapacity(args);
+                try list.ensureUnusedCapacity(1 + args.len);
+                list.appendAssumeCapacity(try self.allocator.dupe(u8, str));
+                for (args) |s| list.appendAssumeCapacity(try self.allocator.dupe(u8, s));
                 break;
             }
             // Otherwise append the non-flag argument to the list and loop
-            list.appendAssumeCapacity(s);
+            try list.append(try self.allocator.dupe(u8, str));
             continue;
         }
 
-        if (s[1] == '-') {
+        if (str[1] == '-') {
             // Check for "--", marking the end of optional arguments
-            if (s.len == 2) {
+            if (str.len == 2) {
                 self.len_at_terminator = list.items.len;
-                list.appendSliceAssumeCapacity(args);
+                try list.ensureUnusedCapacity(args.len);
+                for (args) |s| list.appendAssumeCapacity(try self.allocator.dupe(u8, s));
                 break;
             }
-            args = try self.parseLongArg(s, args);
+            args = try self.parseLongArg(str, args);
         } else {
-            args = try self.parseShortArg(s, args);
+            args = try self.parseShortArg(str, args);
         }
     }
 
@@ -856,10 +862,8 @@ fn parseShortSingle(self: *FlagSet, shorthands: []const u8, args: ArgList, out_a
     const c = shorthands[0];
 
     const flag = self.shorthands.get(c) orelse {
-        if (c == 'h') {
+        if (self.shorthand_help and c == 'h') {
             self.printDefaults() catch {};
-            // TODO: Create an error.Help to let caller know?
-            // It would allow for the convention of "app --help cmd"
             return out_shorts;
         }
 

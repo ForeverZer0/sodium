@@ -43,7 +43,7 @@ test "shorthand joined" {
     try flags.addFlag(bool, "sync", 's', "sync database before executing", &sync);
     try flags.addFlag(bool, "follow-links", 'f', "follow symbolic links", &follow);
 
-    try flags.parseArgs(&[_][]const u8{"-vrs"});
+    try flags.parseArgs(&[_][]const u8{ "-vrs", "--", "|", "echo", "'hello world'" });
 
     try expectEqual(true, verbose);
     try expectEqual(false, archive);
@@ -54,4 +54,6 @@ test "shorthand joined" {
     const usages = try flags.flagUsages(allocator, 0);
     defer allocator.free(usages);
     std.debug.print("{s}", .{usages});
+
+    for (flags.args) |arg| std.debug.print("{s}\n", .{arg});
 }
