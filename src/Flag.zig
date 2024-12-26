@@ -164,6 +164,9 @@ pub fn destroy(self: *Flag, allocator: Allocator) void {
     if (self.deprecated) |str| allocator.free(str);
     if (self.deprecated_shorthand) |str| allocator.free(str);
 
+    for (self.aliases.items) |str| allocator.free(str);
+    self.aliases.deinit(allocator);
+
     var iter = self.annotations.iterator();
     while (iter.next()) |entry| {
         allocator.free(entry.key_ptr.*);

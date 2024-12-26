@@ -818,7 +818,7 @@ fn parseLongArg(self: *FlagSet, str: []const u8, arguments: ArgList) !ArgList {
 
         // Recover parsing state and continue.
         if (self.ignore_unknown) {
-            // --unknown=arg
+            // --unknown=value
             if (value != null) return args;
             return stripUnknownFlagValue(args);
         }
@@ -953,6 +953,8 @@ test "FlagSet" {
     try flags.addFlag(LogLevel, "log-level", null, "enable logging with optional `level`", &loglevel);
     try flags.setDefaultNoOpt("log-level", "warning");
     try flags.addFlagDefault(Vec3, "direction", 'd', "the world up direction vector", &direction, "0,1,0");
+
+    try flags.alias("output", "path");
 
     // Parse arguments
     try flags.parseArgs(&[_][]const u8{ "-vrrs", "argument", "--output", "~/filename.ext", "--", "|", "echo", "'hello world'" });
