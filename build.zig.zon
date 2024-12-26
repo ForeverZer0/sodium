@@ -1,9 +1,8 @@
 .{
     .name = "sodium",
-    .version = "0.0.0",
-    // It may work on on previous versions, but is untested, with no plans on
-    // offering support for non-trivial issues related to prior versions.
-    .minimum_zig_version = "0.11.0",
+    .version = "0.1.0",
+    // will likely work with previous versions, but untested and unsupported
+    .minimum_zig_version = "0.13.0",
     .paths = .{
         "build.zig",
         "build.zig.zon",
