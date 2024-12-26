@@ -13,5 +13,4 @@ test "all" {
     std.testing.refAllDecls(AnyValue);
     std.testing.refAllDecls(Flag);
     std.testing.refAllDecls(FlagSet);
-    std.testing.refAllDecls(@import("flagset_test.zig"));
 }

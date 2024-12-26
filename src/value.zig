@@ -26,10 +26,28 @@ pub fn Value(comptime T: type, comptime parse_func: ParseFunc(T)) type {
     return struct {
         const Self = @This();
 
+        /// A pointer the value being wrapped.
         value_ptr: *T,
+        /// Optional function pointer that will be called to retrieve
+        /// the name of an argument of this type in usage text.
+        ///
+        /// When `null`, a generic built-in function will be used.
+        ///
+        /// ex. `Value(u32)` -> "uint"
+        ///     `Value([]const u8)` -> "string"
+        ///     `Value([3]i32)` -> "ints"
         argname_func: ?*const fn () []const u8,
+        /// Optional function pointer that will be called to retrieve
+        /// the this value represented as a string.
+        ///
+        /// When `null`, a generic built-in function will be used.
+        ///
+        /// ex. `Value(u32)` -> "45"
+        ///     `Value([]const u8)` -> "hello world"
+        ///     `Value([3]i32)` -> "1,2,3"
         string_func: ?StringFunc(T),
 
+        /// Initializes the struct, wrapping the value located at `value_ptr`.
         pub fn init(value_ptr: *T) Self {
             return .{
                 .value_ptr = value_ptr,
@@ -38,6 +56,7 @@ pub fn Value(comptime T: type, comptime parse_func: ParseFunc(T)) type {
             };
         }
 
+        /// Returns an implementation of the `AnyValue` interface wrapping the value.
         pub fn any(self: Self) AnyValue {
             return AnyValue{
                 .type_name = @typeName(T),
@@ -58,6 +77,7 @@ pub fn Value(comptime T: type, comptime parse_func: ParseFunc(T)) type {
             self.value_ptr.* = value;
         }
 
+        /// Returns the string representation of the value.
         pub fn toString(self: *Self, allocator: Allocator) Allocator.Error![]u8 {
             if (self.string_func) |fptr| {
                 return fptr(allocator, self.value_ptr);
@@ -113,11 +133,6 @@ pub fn Value(comptime T: type, comptime parse_func: ParseFunc(T)) type {
 
         /// Returns an function to get the argument name.
         fn defaultArgName() []const u8 {
-            // const Closure = struct {
-            //     fn typeName() []const u8 {
-            //         return comptime argName(T);
-            //     }
-            // };
             return comptime argName(T);
         }
 
