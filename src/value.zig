@@ -27,7 +27,7 @@ pub fn Value(comptime T: type, comptime parse_func: ParseFunc(T)) type {
         const Self = @This();
 
         value_ptr: *T,
-        argname_func: ?*fn () []const u8,
+        argname_func: ?*const fn () []const u8,
         string_func: ?StringFunc(T),
 
         pub fn init(value_ptr: *T) Self {
@@ -44,7 +44,7 @@ pub fn Value(comptime T: type, comptime parse_func: ParseFunc(T)) type {
                 .value_ptr = @ptrCast(self.value_ptr),
                 .parse_func = parseImpl,
                 .string_func = stringImpl,
-                .argname_func = self.argname_func orelse argName,
+                .argname_func = self.argname_func orelse defaultArgName,
             };
         }
 
@@ -111,9 +111,19 @@ pub fn Value(comptime T: type, comptime parse_func: ParseFunc(T)) type {
             };
         }
 
+        /// Returns an function to get the argument name.
+        fn defaultArgName() []const u8 {
+            // const Closure = struct {
+            //     fn typeName() []const u8 {
+            //         return comptime argName(T);
+            //     }
+            // };
+            return comptime argName(T);
+        }
+
         /// Default implementation to get the argument name.
-        fn argName() []const u8 {
-            return switch (@typeInfo(T)) {
+        fn argName(comptime Type: type) []const u8 {
+            return switch (@typeInfo(Type)) {
                 .Int => |int| switch (int.signedness) {
                     .signed => "int",
                     else => if (int.bits == 21) "char" else "uint",
@@ -161,7 +171,7 @@ test "Value" {
     const str = try value.toString(std.testing.allocator);
     defer std.testing.allocator.free(str);
     try expectEqualStrings("2000", str);
-    try expectEqualStrings("uint", Uint32.argName());
+    try expectEqualStrings("uint", Uint32.defaultArgName());
 
     const any = value.any();
     try any.parse("0xEFBBBF");
