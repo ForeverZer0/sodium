@@ -44,7 +44,7 @@ allocator: Allocator,
 name: []const u8,
 /// The function called to display usage text to the user (e.g. "appname --help").
 /// A `null` value uses a built-in function, but it can be overridden by assigning this field.
-usage: ?*const fn (self: *FlagSet) void,
+usage: ?*const fn (self: *FlagSet, writer: std.io.AnyWriter) anyerror!void,
 /// Indicates if the flags have been parsed from the command line.
 parsed: bool,
 /// Indicates if flags will be sorted lexicographical order in the usage text.
@@ -65,7 +65,7 @@ exit_on_error: bool,
 /// `args` would contain only "https://example.com", as it not part of the options.
 args: ArgList,
 /// The length of the arguments at the point a `--` was encountered while parsing, or `null` if not present.
-len_at_terminator: ?usize,
+args_before_terminator: ?usize,
 /// Mapping of flags that were explicitly parsed from the command line arguments.
 /// This field should only be used in a read-only context.
 actual: FlagMap,
@@ -111,7 +111,7 @@ pub fn init(allocator: Allocator, name: []const u8) Error!FlagSet {
         .interspersed = true,
         .exit_on_error = true,
         .args = &.{},
-        .len_at_terminator = null,
+        .args_before_terminator = null,
         .actual = .{},
         .defined = .{},
         .actual_sorted = .{},
@@ -585,12 +585,14 @@ pub fn getOccurrenceCount(self: *const FlagSet, name: []const u8) usize {
 }
 
 /// Prints the default usage text.
-pub fn printDefaults(self: *FlagSet) !void {
-    const usages = try self.flagUsages(self.allocator, 0);
+pub fn printUsageText(self: *FlagSet) !void {
+    const usages = try self.usageText(self.allocator, 0);
     defer self.allocator.free(usages);
 
     const output = self.getOutput();
-    if (self.output == null) {
+    if (self.usage) |fptr| {
+        try fptr(self, output);
+    } else {
         try std.fmt.format(output, "Usage of {s}:\n", .{self.name});
     }
     return output.writeAll(usages);
@@ -600,7 +602,7 @@ pub fn printDefaults(self: *FlagSet) !void {
 /// A value of `0` indicates no wrapping.
 ///
 /// The caller is responsible for freeing the returned memory.
-pub fn flagUsages(self: *FlagSet, allocator: Allocator, columns: usize) Allocator.Error![]u8 {
+pub fn usageText(self: *FlagSet, allocator: Allocator, columns: usize) Allocator.Error![]u8 {
     var lines = try std.ArrayList([]u8).initCapacity(allocator, self.defined_ordered.items.len);
     defer {
         for (lines.items) |line| allocator.free(line);
@@ -686,7 +688,7 @@ fn writeEscaped(text: []const u8, writer: std.ArrayList(u8).Writer) !void {
             str = str[i + 1 ..];
             continue;
         }
-        // No back-tick found, write the whole string and break
+        // No back-tick found, write the remainder of the string and break
         try writer.writeAll(str);
         break;
     }
@@ -763,7 +765,7 @@ pub fn parseArgs(self: *FlagSet, arguments: ArgList) !void {
         if (str[1] == '-') {
             // Check for "--", marking the end of optional arguments
             if (str.len == 2) {
-                self.len_at_terminator = list.items.len;
+                self.args_before_terminator = list.items.len;
                 try list.ensureUnusedCapacity(args.len);
                 for (args) |s| list.appendAssumeCapacity(try self.allocator.dupe(u8, unquote(s)));
                 break;
@@ -782,25 +784,22 @@ pub fn parseArgs(self: *FlagSet, arguments: ArgList) !void {
 /// the whether the following value was associated with the ignored
 /// flag, and consumes it.
 fn stripUnknownFlagValue(args: ArgList) ArgList {
-    if (args.len == 0) {
-        // --unknown
-        return args;
-    }
+    // --unknown
+    if (args.len == 0) return args;
 
+    // --unknown --next-flag
     const first = args[0];
-    if (first.len > 0 and first[0] == '-') {
-        // --unknown --next-flag
-        return args;
-    }
+    if (first.len > 0 and first[0] == '-') return args;
 
-    if (args.len > 1) {
-        // --unknown value (consumes value)
-        return args[1..];
-    }
+    // --unknown value (consumes value)
+    if (args.len > 1) return args[1..];
 
     return &.{};
 }
 
+/// Strips quotes from the first and last positions of a string.
+/// Characters will already be properly escaped at this point,
+/// but the quotes are retained and need stripped.
 fn unquote(str: []const u8) []const u8 {
     if (str.len < 2) return str;
     const quote = str[0];
@@ -836,7 +835,7 @@ fn parseLongArg(self: *FlagSet, str: []const u8, arguments: ArgList) !ArgList {
 
     const flag = self.getFlag(name, true) orelse {
         if (std.mem.eql(u8, "help", name)) {
-            try self.printDefaults();
+            try self.printUsageText();
             return args;
         }
 
@@ -893,7 +892,7 @@ fn parseShortSingle(self: *FlagSet, shorthands: []const u8, args: ArgList, out_a
 
     const flag = self.shorthands.get(c) orelse {
         if (self.shorthand_help and c == 'h') {
-            self.printDefaults() catch {};
+            self.printUsageText() catch {};
             return out_shorts;
         }
 
