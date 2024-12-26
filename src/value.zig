@@ -112,7 +112,7 @@ pub fn Value(comptime T: type, comptime parse_func: ParseFunc(T)) type {
                         try writeSingleValue(vec.child, writer, value[i]);
                     }
                 },
-                else => @compileError(""),
+                else => std.fmt.format(writer, "{any}", .{value}) catch return error.OutOfMemory,
             }
 
             return buffer.toOwnedSlice();
@@ -158,8 +158,8 @@ pub fn Value(comptime T: type, comptime parse_func: ParseFunc(T)) type {
                     };
                     break :blk "string";
                 },
-                .Array => |ary| argName(ary.child) ++ "s",
-                .Vector => |vec| argName(vec.child) ++ "s",
+                .Array => |ary| argName(ary.child) ++ if (ary.len > 1) "s" else "",
+                .Vector => |vec| argName(vec.child) ++ if (vec.len > 1) "s" else "",
                 else => "arg",
             };
         }
