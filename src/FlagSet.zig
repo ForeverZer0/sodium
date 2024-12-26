@@ -507,24 +507,8 @@ pub fn deprecateShorthand(self: *const FlagSet, shorthand: u8, usage: []const u8
 ///
 /// This allows programs to assign additional metadata, such as shell completion information, etc.
 pub fn annotate(self: *const FlagSet, name: []const u8, key: []const u8, entry: []const u8) Error!void {
-    if (self.getFlag(name, true)) |flag| {
-        // Create a copy of the key, and attempt to get existing entry, creating if not found.
-        const owned_key = try self.allocator.dupe(u8, key);
-        const result = flag.annotations.getOrPut(self.allocator, owned_key) catch |err| {
-            self.allocator.free(owned_key);
-            return err;
-        };
-        // If the key already existed, so free the copy that was made
-        defer if (result.found_existing) self.allocator.free(owned_key);
-        // Append the line of text to the entry.
-        var list: Flag.StringList = result.value_ptr.*;
-        // Zero the memory if it didn't previously exist.
-        if (!result.found_existing) list = .{};
-
-        const owned_value = try self.allocator.dupe(u8, entry);
-        errdefer self.allocator.free(owned_value);
-        try list.append(self.allocator, owned_value);
-    } else return error.UnknownFlag;
+    var array = [_][]const u8{entry};
+    return self.annotateSlice(name, key, &array);
 }
 
 /// Sets a slice of arbitrary annotations on a flag.
@@ -534,20 +518,13 @@ pub fn annotateSlice(self: *const FlagSet, name: []const u8, key: []const u8, en
     // Early out if no values
     if (entries.len == 0) return;
     if (self.getFlag(name, true)) |flag| {
+        // Create a new entry if it does not exist
+        if (!flag.annotations.contains(key)) {
+            const owned_key = try self.allocator.dupe(u8, key);
+            try flag.annotations.put(self.allocator, owned_key, .{});
+        }
 
-        // Create a copy of the key, and attempt to get existing entry, creating if not found.
-        const owned_key = try self.allocator.dupe(u8, key);
-        const result = flag.annotations.getOrPut(self.allocator, owned_key) catch |err| {
-            self.allocator.free(owned_key);
-            return err;
-        };
-        // If the key already existed, free the copy that was made
-        defer if (result.found_existing) self.allocator.free(owned_key);
-        // Append the line of text to the entry.
-        var list: Flag.StringList = result.value_ptr.*;
-        // Zero the memory if it didn't previously exist.
-        if (!result.found_existing) list = .{};
-
+        var list: *Flag.StringList = flag.annotations.getPtr(key).?;
         // Ensure enough space for the entries, then add them.
         try list.ensureUnusedCapacity(self.allocator, entries.len);
         for (entries) |entry| {
@@ -1004,6 +981,14 @@ test "FlagSet" {
 
     const usage_text = try flags.usageText(allocator, 0);
     defer allocator.free(usage_text);
+
+    const lines = [3][]const u8{ "first", "second", "third" };
+
+    try flags.annotateSlice("verbose", "keyname", lines[0..2]);
+    try flags.annotate("verbose", "keyname", lines[2]);
+    const entry = flags.annotation("verbose", "keyname") orelse unreachable;
+    try expectEqual(lines.len, entry.len);
+    for (lines, entry) |expect, actual| try expectEqualStrings(expect, actual);
 
     // argument name extraction
     try expectEqual(true, std.mem.indexOf(u8, usage_text, "output <filename>") != null);
