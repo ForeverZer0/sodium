@@ -1,5 +1,6 @@
 //! Interface type of values that can be parsed from a command-line option.
 
+const wrapper = @import("wrapper.zig");
 const Allocator = @import("std").mem.Allocator;
 const ParseError = @import("errors.zig").ParseError;
 const AnyValue = @This();
@@ -21,6 +22,29 @@ string_func: *const fn (allocator: Allocator, value: *const anyopaque) Allocator
 ///
 /// `-o, --output <string>  sets the output path`
 argname_func: *const fn () []const u8,
+
+/// Wraps a value of type `T` located at the given pointer.
+pub fn wrap(comptime T: type, ptr: *T) AnyValue {
+    // Determine the appropriate wrapper type at comptime.
+    const ValueType = comptime switch (@typeInfo(T)) {
+        .Int => wrapper.Int(T),
+        .Float => wrapper.Float(T),
+        .Bool => wrapper.Bool,
+        .Enum => wrapper.Enum(T),
+        .Array => wrapper.Array(T),
+        .Vector => wrapper.Vector(T),
+        .Pointer => |pointer| blk: {
+            if (pointer.size != .Slice) @compileError("pointer types require a custom parsing implementation");
+            if (pointer.child != u8) @compileError("expected slice of type \"[]const u8\" (string), found " ++ @typeName(T));
+            if (!pointer.is_const) @compileError("expected \"[]const u8\", found \"[]u8\"");
+            break :blk wrapper.String;
+        },
+        else => @compileError("unable to parse \"" ++ @typeName(T) ++ "\" type, see addFlagWithValue()"),
+    };
+
+    var value = ValueType.init(ptr);
+    return value.any();
+}
 
 /// Parses a value from a string and stores the result
 /// in the underlying storage.

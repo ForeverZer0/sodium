@@ -11,27 +11,24 @@ const wrapper = @import("wrapper.zig");
 const Allocator = std.mem.Allocator;
 const AnyValue = @import("AnyValue.zig");
 const Error = @import("errors.zig").Error;
+
 const Flag = @import("Flag.zig");
+const FlagEntry = @import("FlagEntry.zig");
 const FlagSet = @This();
 
-/// A dynamically-sized list of flags.
-pub const FlagList = std.ArrayListUnmanaged(*Flag);
-
-/// "[]const []const u8" is gross.
+const FlagList = std.ArrayListUnmanaged(*FlagEntry);
 const ArgList = []const []const u8;
-
-/// A hashmap containing flags, with their names as keys.
-pub const FlagMap = std.StringHashMapUnmanaged(*Flag);
+const FlagMap = std.StringHashMapUnmanaged(*FlagEntry);
 
 /// Iterator for flags.
 pub const FlagIterator = struct {
     /// The current index.
     index: usize = 0,
     /// The items to be yielded.
-    items: []const *Flag,
+    items: []const *FlagEntry,
 
-    /// Yields the next item in the iterator, or `null` when items have been exhausted.
-    pub fn next(self: *FlagIterator) ?*Flag {
+    /// Yields the next item, or `null` when all items have been exhausted.
+    pub fn next(self: *FlagIterator) ?*FlagEntry {
         if (self.index >= self.items.len) return null;
         defer self.index += 1;
         return self.items[self.index];
@@ -74,7 +71,7 @@ actual: FlagMap,
 defined: FlagMap,
 /// Mapping of shorthand arguments to flags.
 /// This field should only be used in a read-only context.
-shorthands: std.AutoHashMapUnmanaged(u8, *Flag),
+shorthands: std.AutoHashMapUnmanaged(u8, *FlagEntry),
 /// List of lags in the order they were parsed from command-line arguments;
 /// This field is private and for internal use only. See `iterator()`.
 actual_ordered: FlagList,
@@ -178,7 +175,25 @@ pub fn merge(self: *FlagSet, other: *FlagSet, ignore_duplicates: bool) Error!voi
     }
 }
 
-/// Defines a new flag in the set and returns it.
+/// Defines a new flag with the specified configuration.
+pub fn add(self: *FlagSet, config: Flag) Error!void {
+    try self.addFlagWithValue(config.name, config.shorthand, config.usage, config.value);
+    if (config.default) |str| try self.setDefault(config.name, str);
+    if (config.default_no_opt) |str| try self.setDefaultNoOpt(config.name, str);
+    if (config.deprecated) |str| try self.deprecate(config.name, str);
+    if (config.deprecated_shorthand) |str| {
+        if (config.shorthand) |c| try self.deprecateShorthand(c, str);
+    }
+    if (config.aliases) |aliases| for (aliases) |str| try self.alias(config.name, str);
+}
+
+/// Defines multiple flags with the specified configurations.
+pub fn addSlice(self: *FlagSet, config: []const Flag) Error!void {
+    for (config) |cfg| try self.add(cfg);
+}
+
+/// Defines a new flag in the set.
+/// See `addFlagWithValue()` for a variant of this function for custom value types.
 ///
 ///     * `T` is the data type of the argument.
 ///     * `name` it the name of the argument (without leading dashed) e.g. "output"
@@ -188,42 +203,8 @@ pub fn merge(self: *FlagSet, other: *FlagSet, ignore_duplicates: bool) Error!voi
 ///
 /// If a flag with the same name, alias, or shorthand already exists, an error will be returned.
 pub fn addFlag(self: *FlagSet, comptime T: type, name: []const u8, shorthand: ?u8, usage: []const u8, ptr: *T) Error!void {
-    // Determine the appropriate wrapper type at comptime.
-    const ValueType = comptime switch (@typeInfo(T)) {
-        .Int => wrapper.Int(T),
-        .Float => wrapper.Float(T),
-        .Bool => wrapper.Bool,
-        .Enum => wrapper.Enum(T),
-        .Array => wrapper.Array(T),
-        .Vector => wrapper.Vector(T),
-        .Pointer => |pointer| blk: {
-            if (pointer.size != .Slice) @compileError("pointer types require a custom parsing implementation");
-            if (pointer.child != u8) @compileError("expected slice of type \"[]const u8\" (string), found " ++ @typeName(T));
-            if (!pointer.is_const) @compileError("expected \"[]const u8\", found \"[]u8\"");
-            break :blk wrapper.String;
-        },
-        else => @compileError("unable to parse \"" ++ @typeName(T) ++ "\" type, see addFlagWithValue()"),
-    };
-
-    var value = ValueType.init(ptr);
-    try addFlagWithValue(self, name, shorthand, usage, value.any());
-}
-
-/// Defines a new flag in the set and returns it.
-///
-///     * `T` is the data type of the argument.
-///     * `name` it the name of the argument (without leading dashed) e.g. "output"
-///     * `shorthand` is an optional single letter variant e.g. 'o'
-///     * `usage` is the brief text to be displayed in help messages
-///     * `ptr` is a pointer to a variable where the value will be stored
-///     * `default` is an optional value to assign if flag is omitted.
-///
-/// If a flag with the same name, alias, or shorthand already exists, an error will be returned.
-pub fn addFlagDefault(self: *FlagSet, comptime T: type, name: []const u8, shorthand: ?u8, usage: []const u8, ptr: *T, default: []const u8) Error!void {
-    try addFlag(self, T, name, shorthand, usage, ptr);
-    const flag = self.defined_ordered.items[self.defined_ordered.items.len - 1];
-    try flag.value.parse(default);
-    flag.default = try self.allocator.dupe(u8, default);
+    const value = AnyValue.wrap(T, ptr);
+    try addFlagWithValue(self, name, shorthand, usage, value);
 }
 
 /// Defines a new flag in the set and returns it.
@@ -241,7 +222,7 @@ pub fn addFlagWithValue(self: *FlagSet, name: []const u8, shorthand: ?u8, usage:
     if (self.getFlag(name, true)) |_| return error.DuplicateName;
 
     // Create the flag
-    const flag = try Flag.create(self.allocator, name, shorthand, usage, value);
+    const flag = try FlagEntry.create(self.allocator, name, shorthand, usage, value);
     errdefer flag.destroy(self.allocator);
 
     // Store the flag using its defined name, and optionally shorthand.
@@ -266,7 +247,7 @@ pub fn hasFlags(self: *const FlagSet, include_hidden: bool) bool {
 /// Performs a look for a flag by the given name and returns it.
 /// When `aliases` is `true`, all flag aliases will also be searched for a match.
 /// Returns `null` when no matching flag was found.
-pub fn getFlag(self: *const FlagSet, name: []const u8, aliases: bool) ?*Flag {
+pub fn getFlag(self: *const FlagSet, name: []const u8, aliases: bool) ?*FlagEntry {
     // Since the happy-path is a matching name, check all of them before aliases.
     if (self.defined.get(name)) |flag| return flag;
 
@@ -367,7 +348,7 @@ pub fn setValueAs(self: *FlagSet, comptime T: type, name: []const u8, value: T) 
 
 /// Performs a lookup for a flag by the given shorthand letter and returns it.
 /// Returns `null` when no matching flag was found.
-pub fn getShorthand(self: *const FlagSet, chr: u8) ?*Flag {
+pub fn getShorthand(self: *const FlagSet, chr: u8) ?*FlagEntry {
     return self.shorthands.get(chr);
 }
 
@@ -427,7 +408,7 @@ pub fn iterator(self: *FlagSet, sorted: bool, all: bool) Allocator.Error!FlagIte
 /// Sorts a list of flags in alphanumeric order.
 fn sortFlags(allocator: Allocator, unsorted: FlagList) Allocator.Error!FlagList {
     const Compare = struct {
-        fn lessThan(context: void, a: *Flag, b: *Flag) bool {
+        fn lessThan(context: void, a: *FlagEntry, b: *FlagEntry) bool {
             _ = context;
             const len = @min(a.name.len, b.name.len);
             for (a.name[0..len], b.name[0..len]) |c1, c2| {
@@ -439,7 +420,7 @@ fn sortFlags(allocator: Allocator, unsorted: FlagList) Allocator.Error!FlagList 
 
     var result = try FlagList.initCapacity(allocator, unsorted.items.len);
     result.appendSliceAssumeCapacity(unsorted.items);
-    std.mem.sort(*Flag, result.items, void{}, Compare.lessThan);
+    std.mem.sort(*FlagEntry, result.items, void{}, Compare.lessThan);
     return result;
 }
 
@@ -451,6 +432,16 @@ pub fn alias(self: *const FlagSet, name: []const u8, alias_name: []const u8) Err
         const owned = try self.allocator.dupe(u8, alias_name);
         try flag.aliases.append(self.allocator, owned);
     } else return error.UnknownFlag;
+}
+
+/// Gets the alias names associated with the specified flag name.
+/// Returns an empty slice if the key does not exist, but does not emit an error.
+/// `name` must be the root name of the flag, and not an alias itself.
+pub fn aliasNames(self: *const FlagSet, name: []const u8) []const []const u8 {
+    if (self.getFlag(name, false)) |flag| {
+        return flag.aliases.items;
+    }
+    return &.{};
 }
 
 /// Marks a flag with the given name as "hidden".
@@ -524,7 +515,7 @@ pub fn annotateSlice(self: *const FlagSet, name: []const u8, key: []const u8, en
             try flag.annotations.put(self.allocator, owned_key, .{});
         }
 
-        var list: *Flag.StringList = flag.annotations.getPtr(key).?;
+        var list: *FlagEntry.StringList = flag.annotations.getPtr(key).?;
         // Ensure enough space for the entries, then add them.
         try list.ensureUnusedCapacity(self.allocator, entries.len);
         for (entries) |entry| {
@@ -672,7 +663,7 @@ fn writeEscaped(text: []const u8, writer: std.ArrayList(u8).Writer) !void {
 }
 
 // Writes the argument section of the usage text.
-fn writeArgument(flag: *Flag, writer: std.ArrayList(u8).Writer, type_name: []const u8) !void {
+fn writeArgument(flag: *FlagEntry, writer: std.ArrayList(u8).Writer, type_name: []const u8) !void {
     var arg_name = flag.argName();
     // Ignore "bool" as a name, the presence of the flag is its value.
     if (std.mem.eql(u8, arg_name, "bool")) arg_name = "";
@@ -933,7 +924,6 @@ test "FlagSet" {
     defer flags.deinit();
 
     const LogLevel = enum { none, info, warning, errors, trace };
-    const Vec3 = @Vector(3, f32);
 
     var verbose: bool = false;
     var archive: bool = false;
@@ -942,22 +932,76 @@ test "FlagSet" {
     var follow: bool = false;
     var path: []const u8 = &.{};
     var loglevel: LogLevel = .warning;
+    const Vec3 = @Vector(3, f32);
     var direction: Vec3 = undefined;
 
-    try flags.addFlag(bool, "verbose", 'v', "verbose output", &verbose);
-    try flags.addFlag(bool, "archive", 'a', "preserve file permissions", &archive);
-    try flags.addFlag(bool, "recursive", 'r', "search directories recursively", &recursive);
-    try flags.addFlag(bool, "sync", 's', "sync database before executing", &sync);
-    try flags.addFlag(bool, "follow-links", 'f', "follow symbolic links", &follow);
-    try flags.addFlag([]const u8, "output", 'o', "selects the `filename` of the output", &path);
-    try flags.addFlag(LogLevel, "log-level", null, "enable logging with optional `level`", &loglevel);
-    try flags.setDefaultNoOpt("log-level", "warning");
-    try flags.addFlagDefault(Vec3, "direction", 'd', "the world up direction vector", &direction, "0,1,0");
+    try flags.add(.{
+        .name = "log-level",
+        .usage = "enable logging with optional `level`",
+        .value = AnyValue.wrap(LogLevel, &loglevel),
+        .aliases = &[_][]const u8{"verbosity"},
+        .default_no_opt = "warning",
+    });
 
-    try flags.alias("output", "path");
+    try flags.add(.{
+        .name = "verbose",
+        .shorthand = 'v',
+        .usage = "provide more output",
+        .value = AnyValue.wrap(bool, &verbose),
+    });
+
+    try flags.addSlice(&[_]Flag{
+        .{
+            .name = "archive",
+            .shorthand = 'a',
+            .usage = "preserve file permissions",
+            .value = AnyValue.wrap(bool, &archive),
+        },
+        .{
+            .name = "recursive",
+            .shorthand = 'r',
+            .usage = "search directories recursively",
+            .value = AnyValue.wrap(bool, &recursive),
+        },
+        .{
+            .name = "sync",
+            .shorthand = 's',
+            .usage = "syncronize database before executing",
+            .value = AnyValue.wrap(bool, &sync),
+            .deprecated_shorthand = "use --sync flag",
+        },
+        .{
+            .name = "follow-links",
+            .shorthand = 'f',
+            .usage = "follow symbolic links",
+            .value = AnyValue.wrap(bool, &follow),
+        },
+    });
+
+    try flags.add(.{
+        .name = "output",
+        .shorthand = 'o',
+        .usage = "selects the `filename` used for the output",
+        .value = AnyValue.wrap([]const u8, &path),
+        .aliases = &.{"path"},
+    });
+
+    try flags.add(.{
+        .name = "direction",
+        .shorthand = 'd',
+        .usage = "a unit vector indicating the world 'up' direction",
+        .default = "0,-1,0",
+        .value = AnyValue.wrap(Vec3, &direction),
+    });
+
+    // aliases
+    const alias_names = flags.aliasNames("output");
+    try expectEqual(1, alias_names.len);
+    try expectEqualStrings("path", alias_names[0]);
 
     // Parse arguments
-    try flags.parseArgs(&[_][]const u8{ "-vrrs", "argument", "--output", "~/filename.ext", "--", "|", "echo", "'hello world'" });
+    // contains: joined shorthand, long-form, aliases, terminator, interspersed arguments, quoted string
+    try flags.parseArgs(&[_][]const u8{ "-vrrs", "argument", "--path", "'~/filename.ext'", "--", "|", "echo", "'hello world'" });
 
     // joined shorthand arguments
     try expectEqual(true, verbose);
@@ -965,9 +1009,10 @@ test "FlagSet" {
     try expectEqual(true, recursive);
     try expectEqual(true, sync);
     try expectEqual(false, follow);
+    try expectEqualStrings("~/filename.ext", path);
 
     // Default value being set without parsed from arguments
-    try expectEqual(Vec3{ 0, 1, 0 }, direction);
+    try expectEqual(Vec3{ 0, -1, 0 }, direction);
     try expectEqual(false, flags.isChanged("direction"));
 
     // occurrence count
